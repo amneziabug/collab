@@ -58,7 +58,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "make-demo-dataset":
         from .demo_dataset import make_demo_dataset
-        path = make_demo_dataset(cfg.paths.dataset_manifest.parent)
+        from .processing import ProcessingError
+        try:
+            path = make_demo_dataset(cfg.paths.dataset_manifest.parent)
+        except ProcessingError as exc:
+            log.error("%s", exc)
+            return 1
         print(f"Demo dataset written to {path}")
         return 0
 
