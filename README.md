@@ -51,6 +51,8 @@ shortpipe/
 tests/                pytest (offline AI + fake uploader; no network needed)
 ```
 
+**Day-to-day use:** see [HOW_TO_RUN.md](HOW_TO_RUN.md). Normally you only need `./upload.sh`.
+
 ## Setup
 
 ```bash
