@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# Credentials and tokens - never commit
+secrets/*
+!secrets/.gitkeep
+.env
+# Runtime data
+logs/*
+!logs/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/dataset/*
+!data/dataset/.gitkeep
+*.db

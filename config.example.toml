@@ -1,0 +1,43 @@
+# Copy to config.toml and adjust. Secrets (OPENAI_API_KEY) come from the environment.
+
+[paths]
+database = "data/pipeline.db"
+dataset_manifest = "data/dataset/manifest.json"
+processed_dir = "data/processed"
+log_dir = "logs"
+client_secrets = "secrets/client_secret.json"   # OAuth client from Google Cloud Console
+token_file = "secrets/youtube_token.json"
+
+[ai]
+model = "gpt-4.1-mini"     # override with OPENAI_MODEL
+temperature = 0.4
+max_retries = 3
+# "openai" uses the API; "offline" uses deterministic heuristics (no key needed; for tests/demos)
+provider = "openai"
+
+[selection]
+# Topics you want the AI to favour when ranking
+topics = ["science", "programming", "study tips", "math"]
+min_views = 1000
+min_relevance = 0.5        # 0..1, from the AI analysis
+max_candidates_per_run = 10
+# Licenses accepted as "authorized". Anything else is rejected before processing.
+allowed_licenses = ["owned", "cc0", "cc-by", "written-permission"]
+
+[processing]
+max_duration_seconds = 60
+width = 1080
+height = 1920
+video_bitrate = "4M"
+
+[schedule]
+uploads_per_day = 5
+window_start = "09:00"     # local time
+window_end = "21:00"
+timezone = "Europe/Berlin"
+days_ahead = 3
+
+[youtube]
+category_id = "27"         # 27 = Education
+default_language = "en"
+# Uploads are ALWAYS private; this is enforced in code and not configurable.
