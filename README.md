@@ -31,6 +31,7 @@ shortpipe/
   logging_setup.py    console logs + logs/pipeline.jsonl
   sources/
     base.py           VideoSource interface (add new authorized sources here)
+    folder.py         a plain folder of your own videos (no manifest; title from filename/tags)
     local_dataset.py  JSON-manifest dataset with license + stats per video
     tiktok.py         your own TikTok videos via the official Display API (Login Kit + PKCE)
     rights.py         authorization gate (license, rights holder, attribution)
@@ -123,6 +124,42 @@ Put your clips in `data/dataset/` and describe them in `manifest.json` (format d
 Anything else is rejected at discovery and is never processed. The `stats` can come from your own
 analytics export or be synthetic. To add another permitted source (for example your own channel's
 analytics), implement `VideoSource.discover()`.
+
+### Using a folder of your own videos
+
+The simplest way to use real videos: put them in one folder, and every run picks up new files.
+
+```toml
+[sources]
+enabled = ["folder"]
+
+[folder]
+path = "/mnt/c/Users/YOURNAME/Videos/shortpipe"   # on WSL; any path works
+owner = "Your Name"
+```
+
+- Each new file is analysed and processed, then the AI writes its title, description and tags,
+  and it's scheduled. Because these are your own videos, `auto_approve = true` schedules all of
+  them unless the AI flags a problem. There's no view-count threshold, since a folder has no stats.
+- The starting title comes from the filename (`my_pendulum-test.mp4` → "My pendulum test"), or
+  from a title or comment stored in the file. Descriptive filenames give better results.
+- **Letting the AI see the video (optional).** A text model like `qwen2.5:7b` only reads the
+  filename and tags. To base titles on what's actually on screen, pull a small vision model and set
+  it in `config.toml`:
+  ```bash
+  ollama pull gemma3:4b
+  ```
+  ```toml
+  [ai]
+  ollama_vision_model = "gemma3:4b"
+  ```
+  For each video, ffmpeg grabs `vision_frames` frames, and the vision model describes them. That
+  description goes into the analysis and metadata prompts, and is stored in `visual_summary` and
+  `ai_decisions` (stage `vision`). If the vision step fails, the video goes ahead without it.
+- Files are tracked by name and size. Renaming or re-saving a file makes it a new video, but an
+  identical copy of a file already used is rejected as a duplicate.
+- Videos longer than `processing.max_duration_seconds` (default 60) are cut to that length.
+  Shorts can be up to 3 minutes, so raise it to 180 if your videos are longer.
 
 ### Using your own TikTok videos
 

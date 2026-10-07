@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS videos (
     topic            TEXT,
     processed_path   TEXT,
     content_hash     TEXT,              -- sha256 of the source file, for duplicate detection
+    has_stats        INTEGER NOT NULL DEFAULT 1,
+    visual_summary   TEXT,              -- what a vision model saw in the frames
     yt_title         TEXT,
     yt_description   TEXT,
     yt_tags          TEXT,              -- JSON list
@@ -101,9 +103,11 @@ class Database:
     def _migrate(self) -> None:
         """Add columns introduced after a database was first created."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(videos)")}
-        if "content_hash" not in cols:
-            self.conn.execute("ALTER TABLE videos ADD COLUMN content_hash TEXT")
-            self.conn.commit()
+        for name, ddl in (("content_hash", "TEXT"), ("has_stats", "INTEGER NOT NULL DEFAULT 1"),
+                          ("visual_summary", "TEXT")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {ddl}")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -144,8 +148,8 @@ class Database:
         for i, c in enumerate(cols):
             if c in ("views", "likes", "comments", "shares") and values[i] is None:
                 values[i] = 0
-        cols += ["hashtags", "created_at", "updated_at"]
-        values += [json.dumps(item.get("hashtags", [])), now, now]
+        cols += ["hashtags", "has_stats", "created_at", "updated_at"]
+        values += [json.dumps(item.get("hashtags", [])), int(item.get("has_stats", True)), now, now]
         with self.tx() as c:
             cur = c.execute(
                 f"INSERT INTO videos ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",

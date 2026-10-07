@@ -154,6 +154,19 @@ class OllamaClient(AIClient):
         except TimeoutError as exc:
             raise AIError(f"Ollama did not answer within {self.timeout}s") from exc
 
+    def describe_images(self, prompt: str, images_b64: list[str]) -> str:
+        """Plain-text answer from a vision model (e.g. gemma3:4b) about the given images."""
+        reply = self._post("/api/chat", {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt, "images": images_b64}],
+            "stream": False,
+            "options": {"temperature": 0.2},
+        })
+        text = (reply.get("message", {}).get("content") or "").strip()
+        if not text:
+            raise AIError(f"vision model {self.model} returned no description")
+        return text
+
     def complete_json(self, task: str, system: str, user: str, schema: dict) -> dict[str, Any]:
         body = {
             "model": self.model,

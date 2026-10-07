@@ -12,7 +12,8 @@ rate how relevant it is to the requested topics (0-1) and its educational value 
 any problems (e.g. "misleading", "unsafe", "low_quality", "not_educational").
 Set `recommend` to true when relevance is at least `min_relevance` and there are no flags.
 Leave `content_flags` empty when there are no problems.
-Base your judgement only on the provided metadata. Be concise in `reasoning`."""
+Base your judgement only on the provided metadata. `visual_summary`, when present, describes
+frames from the video itself and is the most reliable signal of what the video shows. Be concise in `reasoning`."""
 
 ANALYSIS_SCHEMA = {
     "type": "object",
@@ -37,7 +38,9 @@ def build_prompt(video: dict, topics: list[str], min_relevance: float) -> str:
             "description": video["description"] or "",
             "hashtags": json.loads(video["hashtags"] or "[]"),
             "duration_seconds": video["duration_seconds"],
-            "stats": {k: video[k] for k in ("views", "likes", "comments", "shares")},
+            "visual_summary": video.get("visual_summary") or "",
+            "stats": ({k: video[k] for k in ("views", "likes", "comments", "shares")}
+                      if video.get("has_stats", 1) else "not available"),
         },
     }, ensure_ascii=False)
 

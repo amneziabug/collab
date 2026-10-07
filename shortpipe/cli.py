@@ -14,7 +14,7 @@ from .config import load_config
 from .db import Database
 from .logging_setup import setup_logging
 from .pipeline import Pipeline
-from .sources import LocalDatasetSource, TikTokAuth, TikTokAuthError, TikTokDisplaySource
+from .sources import FolderSource, LocalDatasetSource, TikTokAuth, TikTokAuthError, TikTokDisplaySource
 
 log = logging.getLogger("shortpipe")
 
@@ -139,6 +139,8 @@ def _sources(cfg) -> list:
     sources = []
     if "local" in cfg.sources.enabled:
         sources.append(LocalDatasetSource(cfg.paths.dataset_manifest))
+    if "folder" in cfg.sources.enabled:
+        sources.append(FolderSource(cfg.folder.path, cfg.folder.owner, cfg.folder.recursive))
     if "tiktok" in cfg.sources.enabled:
         sources.append(TikTokDisplaySource(_tiktok_auth(cfg), cfg.tiktok.video_dir,
                                            cfg.tiktok.max_videos))

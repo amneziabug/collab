@@ -26,6 +26,8 @@ class AIConfig:
     ollama_model: str = "llama3.2:3b"
     ollama_url: str = "http://localhost:11434"
     ollama_timeout: int = 300
+    ollama_vision_model: str = ""  # optional, e.g. "gemma3:4b": describes frames of each video
+    vision_frames: int = 3
     # Claude API
     model: str = "claude-opus-5-5"
     effort: str = "medium"  # low | medium | high | xhigh | max
@@ -67,7 +69,7 @@ class YouTubeConfig:
 
 @dataclass
 class SourcesConfig:
-    enabled: list[str] = field(default_factory=lambda: ["local"])  # "local", "tiktok"
+    enabled: list[str] = field(default_factory=lambda: ["local"])  # "local", "tiktok", "folder"
 
 
 @dataclass
@@ -81,10 +83,19 @@ class TikTokConfig:
 
 
 @dataclass
+class FolderConfig:
+    path: Path = Path("data/my_videos")  # e.g. "/mnt/c/Users/<you>/Videos/shortpipe" on WSL
+    owner: str = ""             # your name: declares you made/own every video in this folder
+    recursive: bool = False     # also look in sub-folders
+    auto_approve: bool = True   # schedule every video here (unless the AI flags a problem)
+
+
+@dataclass
 class Config:
     paths: Paths = field(default_factory=Paths)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     tiktok: TikTokConfig = field(default_factory=TikTokConfig)
+    folder: FolderConfig = field(default_factory=FolderConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
@@ -121,7 +132,7 @@ def load_config(path: str | Path | None = None) -> Config:
 
     cfg.tiktok.client_key = os.environ.get("TIKTOK_CLIENT_KEY", cfg.tiktok.client_key)
     cfg.tiktok.client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", cfg.tiktok.client_secret)
-    unknown = set(cfg.sources.enabled) - {"local", "tiktok"}
+    unknown = set(cfg.sources.enabled) - {"local", "tiktok", "folder"}
     if unknown:
         raise ValueError(f"sources.enabled has unknown source(s): {sorted(unknown)}")
     if host := os.environ.get("OLLAMA_HOST"):

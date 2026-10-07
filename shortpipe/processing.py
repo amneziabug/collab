@@ -46,7 +46,7 @@ def probe(path: Path) -> dict:
 
 
 def process_video(src: Path, out_dir: Path, *, max_duration: int, width: int, height: int,
-                  bitrate: str, timeout: int = 600) -> tuple[Path, float]:
+                  bitrate: str, timeout: int = 600, name: str | None = None) -> tuple[Path, float]:
     """Transcode `src` into a YouTube-Shorts-friendly MP4. Returns (path, duration)."""
     require_ffmpeg()
     src = Path(src)
@@ -55,7 +55,7 @@ def process_video(src: Path, out_dir: Path, *, max_duration: int, width: int, he
     info = probe(src)
     duration = min(info["duration"], float(max_duration))
     out_dir.mkdir(parents=True, exist_ok=True)
-    dst = out_dir / f"{src.stem}_short.mp4"
+    dst = out_dir / f"{name or src.stem}_short.mp4"
     tmp = dst.with_suffix(".part.mp4")
 
     vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"

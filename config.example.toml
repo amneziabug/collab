@@ -10,8 +10,15 @@ token_file = "secrets/youtube_token.json"
 
 [sources]
 # "local"  = data/dataset/manifest.json (your own clips or licensed test clips)
+# "folder" = a folder of videos you made (see [folder]): just drop files in
 # "tiktok" = your own TikTok account via the official Display API (see [tiktok])
 enabled = ["local"]
+
+[folder]
+path = "/mnt/c/Users/YOURNAME/Videos/shortpipe"   # Windows folder C:\Users\YOURNAME\Videos\shortpipe, seen from WSL
+owner = ""                # your name: confirms you made/own every video in this folder (required)
+recursive = false         # also scan sub-folders
+auto_approve = true       # schedule every video here unless the AI flags a problem
 
 [tiktok]
 # From your app on developers.tiktok.com. Prefer env vars TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET.
@@ -32,6 +39,8 @@ max_retries = 3
 ollama_model = "llama3.2:3b"   # run `ollama pull llama3.2:3b` first; bigger = better but slower
 ollama_url = "http://localhost:11434"   # or set OLLAMA_HOST
 ollama_timeout = 300           # seconds per request; CPU-only machines can be slow
+ollama_vision_model = ""       # optional, e.g. "gemma3:4b": looks at frames so titles match the video
+vision_frames = 3
 
 model = "claude-opus-5-5"      # Claude API only; override with CLAUDE_MODEL
 effort = "medium"              # Claude API only: low | medium | high | xhigh | max

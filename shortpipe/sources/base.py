@@ -25,6 +25,7 @@ class SourceItem:
     comments: int = 0
     shares: int = 0
     hashtags: list[str] = field(default_factory=list)
+    has_stats: bool = True     # False when the source has no view/like counts (e.g. a folder)
 
     def to_dict(self) -> dict:
         return asdict(self)

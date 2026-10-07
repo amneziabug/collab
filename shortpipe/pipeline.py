@@ -13,7 +13,8 @@ from typing import Callable
 
 from . import scheduler
 from .ai import AIConfigError, AIError, analyze_video, generate_metadata
-from .ai.client import AIClient
+from .ai.client import AIClient, OllamaClient
+from .ai.vision import describe_video
 from .config import Config
 from .db import Database
 from .processing import ProcessingError, process_video
@@ -36,13 +37,19 @@ def file_sha256(path: Path) -> str:
 
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, ai_factory: Callable[[], AIClient],
-                 uploader_factory: Callable[[], object] | None = None):
+                 uploader_factory: Callable[[], object] | None = None,
+                 vision_factory: Callable[[], object] | None = None):
         self.cfg = cfg
         self.db = db
         self._ai_factory = ai_factory
         self._ai: AIClient | None = None
         self._uploader_factory = uploader_factory
         self._uploader = None
+        if vision_factory is None and cfg.ai.ollama_vision_model:
+            vision_factory = lambda: OllamaClient(cfg.ai.ollama_vision_model, cfg.ai.ollama_url,  # noqa: E731
+                                                  cfg.ai.ollama_timeout, cfg.ai.max_retries)
+        self._vision_factory = vision_factory
+        self._vision = None
 
     @property
     def ai(self) -> AIClient:
@@ -84,7 +91,7 @@ class Pipeline:
             self.ai  # fail fast on config errors (e.g. missing API key) without marking videos failed
         scored = []
         for n, video in enumerate(candidates, start=1):
-            if video["views"] < sel.min_views:
+            if video["has_stats"] and video["views"] < sel.min_views:
                 self.db.set_status(video["id"], "rejected", f"views {video['views']} < {sel.min_views}")
                 log.info("[%d/%d] #%d %r rejected: only %d views", n, len(candidates),
                          video["id"], video["title"], video["views"])
@@ -92,6 +99,7 @@ class Pipeline:
             log.info("[%d/%d] Analysing #%d %r with %s ...", n, len(candidates),
                      video["id"], video["title"], self.ai.model)
             started = time.monotonic()
+            video = self._ensure_visual_summary(video)
             try:
                 prompt, result = analyze_video(self.ai, video, sel.topics, sel.min_relevance)
             except AIConfigError:
@@ -107,6 +115,9 @@ class Pipeline:
                            engagement_score=engagement, final_score=score)
             if result["content_flags"]:
                 self.db.set_status(video["id"], "rejected", f"AI flags: {result['content_flags']}")
+            elif video["source"] == "folder" and self.cfg.folder.auto_approve:
+                # Your own folder: everything is scheduled; the analysis still sets topic and score.
+                scored.append((score, video["id"], f"auto-approved (folder); {result['reasoning']}"))
             elif result["relevance"] < sel.min_relevance:
                 # Selection uses the numeric score only; the model's own yes/no is logged but not
                 # trusted, because small local models often contradict their scores.
@@ -124,6 +135,30 @@ class Pipeline:
                 self.db.set_status(video_id, "rejected", f"rank {rank} beyond max_candidates_per_run")
         log.info("Analysis: %d analysed, %d selected", len(candidates), selected)
         return selected
+
+    def _ensure_visual_summary(self, video):
+        """Describe the video's frames with the vision model, once, if one is configured."""
+        if self._vision_factory is None or video["visual_summary"]:
+            return video
+        path = Path(video["file_path"] or "")
+        if not path.is_file():
+            return video
+        if self._vision is None:
+            self._vision = self._vision_factory()
+        started = time.monotonic()
+        try:
+            summary = describe_video(self._vision, path, video["duration_seconds"],
+                                     self.cfg.ai.vision_frames)
+        except AIError as exc:
+            # Not fatal: analysis continues from the text metadata alone.
+            log.warning("      vision step skipped for #%d: %s", video["id"], exc)
+            self.db.log_event(video["id"], "vision_failed", str(exc))
+            return video
+        self.db.update(video["id"], visual_summary=summary)
+        self.db.log_ai_decision(video["id"], "vision", self._vision.model,
+                                f"{self.cfg.ai.vision_frames} frames from {path.name}", {"summary": summary})
+        log.info("      saw: %s (%.0fs)", summary[:150].replace("\n", " "), time.monotonic() - started)
+        return self.db.get(video["id"])
 
     # 3. Processing ------------------------------------------------------------
     def process(self) -> int:
@@ -153,7 +188,7 @@ class Pipeline:
                 out, duration = process_video(
                     src, self.cfg.paths.processed_dir,
                     max_duration=p.max_duration_seconds, width=p.width, height=p.height,
-                    bitrate=p.video_bitrate,
+                    bitrate=p.video_bitrate, name=f"{video['id']}_{src.stem}",
                 )
             except ProcessingError as exc:
                 self._fail(video, "processing", exc)

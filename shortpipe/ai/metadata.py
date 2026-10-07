@@ -10,7 +10,9 @@ from .client import AIClient
 SYSTEM_PROMPT = """You write YouTube Shorts metadata for an educational channel.
 Write an accurate, non-clickbait title (max 90 characters), a description of 2-4 short
 sentences that explains what the viewer will learn, and 5-15 relevant lowercase tags.
-Do not invent facts that are not supported by the provided metadata. Do not include URLs."""
+Do not invent facts that are not supported by the provided metadata. Do not include URLs.
+The original title may just be a filename; when `visual_summary` is given, base the title and
+description on what it says the video shows."""
 
 METADATA_SCHEMA = {
     "type": "object",
@@ -63,6 +65,7 @@ def generate_metadata(ai: AIClient, video) -> tuple[str, dict]:
             "description": video["description"] or "",
             "topic": video["topic"] or "",
             "hashtags": json.loads(video["hashtags"] or "[]"),
+            "visual_summary": video.get("visual_summary") or "",
         }
     }, ensure_ascii=False)
     raw = ai.complete_json("youtube_metadata", SYSTEM_PROMPT, prompt, METADATA_SCHEMA)
