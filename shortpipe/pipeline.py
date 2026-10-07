@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -65,10 +66,15 @@ class Pipeline:
         if candidates:
             self.ai  # fail fast on config errors (e.g. missing API key) without marking videos failed
         scored = []
-        for video in candidates:
+        for n, video in enumerate(candidates, start=1):
             if video["views"] < sel.min_views:
                 self.db.set_status(video["id"], "rejected", f"views {video['views']} < {sel.min_views}")
+                log.info("[%d/%d] #%d %r rejected: only %d views", n, len(candidates),
+                         video["id"], video["title"], video["views"])
                 continue
+            log.info("[%d/%d] Analysing #%d %r with %s ...", n, len(candidates),
+                     video["id"], video["title"], self.ai.model)
+            started = time.monotonic()
             try:
                 prompt, result = analyze_video(self.ai, video, sel.topics, sel.min_relevance)
             except AIConfigError:
@@ -77,6 +83,8 @@ class Pipeline:
                 self._fail(video, "analysis", exc)
                 continue
             self.db.log_ai_decision(video["id"], "analysis", self.ai.model, prompt, result)
+            log.info("      topic=%s relevance=%.2f recommend=%s (%.0fs)", result["topic"],
+                     result["relevance"], result["recommend"], time.monotonic() - started)
             engagement, score = final_score(dict(video), result["relevance"], result["educational_value"])
             self.db.update(video["id"], topic=result["topic"], relevance_score=result["relevance"],
                            engagement_score=engagement, final_score=score)
@@ -102,7 +110,9 @@ class Pipeline:
     def process(self) -> int:
         p = self.cfg.processing
         done = 0
-        for video in self.db.by_status("selected"):
+        selected = self.db.by_status("selected")
+        for n, video in enumerate(selected, start=1):
+            log.info("[%d/%d] Processing #%d %r ...", n, len(selected), video["id"], video["title"])
             try:
                 out, duration = process_video(
                     Path(video["file_path"] or ""), self.cfg.paths.processed_dir,
@@ -124,7 +134,9 @@ class Pipeline:
         pending = self.db.by_status("processed")
         if pending:
             self.ai  # fail fast on config errors without marking videos failed
-        for video in pending:
+        for n, video in enumerate(pending, start=1):
+            log.info("[%d/%d] Writing metadata for #%d %r ...", n, len(pending), video["id"], video["title"])
+            started = time.monotonic()
             try:
                 prompt, meta = generate_metadata(self.ai, video)
             except AIConfigError:
@@ -133,6 +145,7 @@ class Pipeline:
                 self._fail(video, "metadata", exc)
                 continue
             self.db.log_ai_decision(video["id"], "metadata", self.ai.model, prompt, meta)
+            log.info("      title: %s (%.0fs)", meta["title"], time.monotonic() - started)
             self.db.set_status(video["id"], "metadata_ready", None, yt_title=meta["title"],
                                yt_description=meta["description"], yt_tags=meta["tags"])
             done += 1
