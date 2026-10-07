@@ -51,7 +51,11 @@ def test_metadata_sanitized_to_youtube_limits():
     assert sum(len(t) for t in meta["tags"]) + len(meta["tags"]) - 1 <= MAX_TAGS_CHARS
 
 
-def test_upload_body_is_always_private():
+def test_upload_body_privacy():
     body = build_body("t", "d", ["a"], "27", "en")
-    assert body["status"]["privacyStatus"] == "private"
+    assert body["status"]["privacyStatus"] == "private"     # default
     assert "publishAt" not in body["status"]
+    assert build_body("t", "d", [], "27", "en", "public")["status"]["privacyStatus"] == "public"
+    import pytest
+    with pytest.raises(ValueError):
+        build_body("t", "d", [], "27", "en", "everyone")

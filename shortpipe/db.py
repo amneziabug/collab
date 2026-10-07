@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS videos (
     final_score      REAL,
     topic            TEXT,
     processed_path   TEXT,
+    content_hash     TEXT,              -- sha256 of the source file, for duplicate detection
+    has_stats        INTEGER NOT NULL DEFAULT 1,
+    visual_summary   TEXT,              -- what a vision model saw in the frames
     yt_title         TEXT,
     yt_description   TEXT,
     yt_tags          TEXT,              -- JSON list
@@ -95,6 +98,16 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(videos)")}
+        for name, ddl in (("content_hash", "TEXT"), ("has_stats", "INTEGER NOT NULL DEFAULT 1"),
+                          ("visual_summary", "TEXT")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {ddl}")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -117,6 +130,12 @@ class Database:
             (item["source"], item["source_id"]),
         ).fetchone()
         if row:
+            # A file the user added after an earlier run (e.g. a TikTok export) is picked up.
+            if item.get("file_path"):
+                current = self.get(row["id"])
+                if not current["file_path"]:
+                    self.update(row["id"], file_path=item["file_path"])
+                    self.log_event(row["id"], "file_found", item["file_path"])
             return row["id"], False
         now = utcnow()
         cols = [
@@ -125,8 +144,12 @@ class Database:
             "views", "likes", "comments", "shares",
         ]
         values = [item.get(c) for c in cols]
-        cols += ["hashtags", "created_at", "updated_at"]
-        values += [json.dumps(item.get("hashtags", [])), now, now]
+        # Missing stats count as 0 (an explicit NULL would bypass the column default).
+        for i, c in enumerate(cols):
+            if c in ("views", "likes", "comments", "shares") and values[i] is None:
+                values[i] = 0
+        cols += ["hashtags", "has_stats", "created_at", "updated_at"]
+        values += [json.dumps(item.get("hashtags", [])), int(item.get("has_stats", True)), now, now]
         with self.tx() as c:
             cur = c.execute(
                 f"INSERT INTO videos ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
@@ -168,6 +191,14 @@ class Database:
             "SELECT * FROM videos WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at",
             (now_iso,),
         ))
+
+    def find_by_hash(self, content_hash: str, exclude_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM videos WHERE content_hash = ? AND id != ? "
+            "AND status IN ('processed', 'metadata_ready', 'scheduled', 'uploading', 'uploaded') "
+            "ORDER BY id LIMIT 1",
+            (content_hash, exclude_id),
+        ).fetchone()
 
     def scheduled_times(self) -> set[str]:
         rows = self.conn.execute(

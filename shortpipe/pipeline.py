@@ -3,6 +3,7 @@ so stages are idempotent and can be re-run (or run separately from cron)."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -12,28 +13,51 @@ from typing import Callable
 
 from . import scheduler
 from .ai import AIConfigError, AIError, analyze_video, generate_metadata
-from .ai.client import AIClient
+from .ai.client import AIClient, OllamaClient
+from .ai.vision import describe_video
 from .config import Config
 from .db import Database
 from .processing import ProcessingError, process_video
 from .ranking import final_score
-from .sources import VideoSource, check_rights
-from .youtube.uploader import QuotaExceededError, UploadError
+from .sources import TikTokAuthError, TikTokError, VideoSource, check_rights
+from .youtube.uploader import QuotaExceededError, UploadError, YouTubeAuthError
 
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+# Flags that block a video even from your own folder; others (e.g. "not_educational") don't.
+SERIOUS_FLAGS = ("unsafe", "misleading", "harmful", "explicit", "violen", "hate", "danger")
+
+
+def is_serious_flag(flag: str) -> bool:
+    return any(word in flag.lower() for word in SERIOUS_FLAGS)
+
+
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, ai_factory: Callable[[], AIClient],
-                 uploader_factory: Callable[[], object] | None = None):
+                 uploader_factory: Callable[[], object] | None = None,
+                 vision_factory: Callable[[], object] | None = None):
         self.cfg = cfg
         self.db = db
         self._ai_factory = ai_factory
         self._ai: AIClient | None = None
         self._uploader_factory = uploader_factory
         self._uploader = None
+        if vision_factory is None and cfg.ai.ollama_vision_model:
+            vision_factory = lambda: OllamaClient(cfg.ai.ollama_vision_model, cfg.ai.ollama_url,  # noqa: E731
+                                                  cfg.ai.ollama_timeout, cfg.ai.max_retries)
+        self._vision_factory = vision_factory
+        self._vision = None
 
     @property
     def ai(self) -> AIClient:
@@ -44,7 +68,15 @@ class Pipeline:
     # 1. Discovery ------------------------------------------------------------
     def discover(self, source: VideoSource) -> int:
         new = 0
-        for item in source.discover():
+        try:
+            items = list(source.discover())
+        except TikTokAuthError:
+            raise  # login problem: stop and tell the user to re-authenticate
+        except (TikTokError, OSError) as exc:
+            log.error("Discovery from %s failed: %s", source.name, exc)
+            self.db.log_event(None, "discovery_failed", {"source": source.name, "error": str(exc)})
+            return 0
+        for item in items:
             data = item.to_dict()
             video_id, created = self.db.upsert_discovered(data)
             if not created:
@@ -67,7 +99,7 @@ class Pipeline:
             self.ai  # fail fast on config errors (e.g. missing API key) without marking videos failed
         scored = []
         for n, video in enumerate(candidates, start=1):
-            if video["views"] < sel.min_views:
+            if video["has_stats"] and video["views"] < sel.min_views:
                 self.db.set_status(video["id"], "rejected", f"views {video['views']} < {sel.min_views}")
                 log.info("[%d/%d] #%d %r rejected: only %d views", n, len(candidates),
                          video["id"], video["title"], video["views"])
@@ -75,6 +107,7 @@ class Pipeline:
             log.info("[%d/%d] Analysing #%d %r with %s ...", n, len(candidates),
                      video["id"], video["title"], self.ai.model)
             started = time.monotonic()
+            video = self._ensure_visual_summary(video)
             try:
                 prompt, result = analyze_video(self.ai, video, sel.topics, sel.min_relevance)
             except AIConfigError:
@@ -88,9 +121,16 @@ class Pipeline:
             engagement, score = final_score(dict(video), result["relevance"], result["educational_value"])
             self.db.update(video["id"], topic=result["topic"], relevance_score=result["relevance"],
                            engagement_score=engagement, final_score=score)
-            if result["content_flags"]:
+            own_folder = video["source"] == "folder" and self.cfg.folder.auto_approve
+            serious = [f for f in result["content_flags"] if is_serious_flag(f)]
+            if serious or (result["content_flags"] and not own_folder):
                 self.db.set_status(video["id"], "rejected", f"AI flags: {result['content_flags']}")
-            elif not result["recommend"] or result["relevance"] < sel.min_relevance:
+            elif own_folder:
+                # Your own folder: everything is scheduled; the analysis still sets topic and score.
+                scored.append((score, video["id"], f"auto-approved (folder); {result['reasoning']}"))
+            elif result["relevance"] < sel.min_relevance:
+                # Selection uses the numeric score only; the model's own yes/no is logged but not
+                # trusted, because small local models often contradict their scores.
                 self.db.set_status(video["id"], "rejected",
                                    f"relevance {result['relevance']:.2f}: {result['reasoning']}")
             else:
@@ -106,18 +146,59 @@ class Pipeline:
         log.info("Analysis: %d analysed, %d selected", len(candidates), selected)
         return selected
 
+    def _ensure_visual_summary(self, video):
+        """Describe the video's frames with the vision model, once, if one is configured."""
+        if self._vision_factory is None or video["visual_summary"]:
+            return video
+        path = Path(video["file_path"] or "")
+        if not path.is_file():
+            return video
+        if self._vision is None:
+            self._vision = self._vision_factory()
+        started = time.monotonic()
+        try:
+            summary = describe_video(self._vision, path, video["duration_seconds"],
+                                     self.cfg.ai.vision_frames)
+        except AIError as exc:
+            # Not fatal: analysis continues from the text metadata alone.
+            log.warning("      vision step skipped for #%d: %s", video["id"], exc)
+            self.db.log_event(video["id"], "vision_failed", str(exc))
+            return video
+        self.db.update(video["id"], visual_summary=summary)
+        self.db.log_ai_decision(video["id"], "vision", self._vision.model,
+                                f"{self.cfg.ai.vision_frames} frames from {path.name}", {"summary": summary})
+        log.info("      saw: %s (%.0fs)", summary[:150].replace("\n", " "), time.monotonic() - started)
+        return self.db.get(video["id"])
+
     # 3. Processing ------------------------------------------------------------
     def process(self) -> int:
         p = self.cfg.processing
         done = 0
         selected = self.db.by_status("selected")
         for n, video in enumerate(selected, start=1):
+            src = Path(video["file_path"] or "")
+            if not video["file_path"] or not src.is_file():
+                # Not an error: e.g. a TikTok video whose export hasn't been copied in yet.
+                if video["status_reason"] != "waiting for local file":
+                    self.db.set_status(video["id"], "selected", "waiting for local file")
+                log.warning("[%d/%d] #%d %r: no local video file yet (%s); will retry next run",
+                            n, len(selected), video["id"], video["title"], video["file_path"] or "not found")
+                continue
+            content_hash = file_sha256(src)
+            duplicate = self.db.find_by_hash(content_hash, video["id"])
+            if duplicate:
+                self.db.set_status(video["id"], "rejected", f"duplicate of #{duplicate['id']}",
+                                   content_hash=content_hash)
+                log.info("[%d/%d] #%d %r rejected: same file as #%d", n, len(selected),
+                         video["id"], video["title"], duplicate["id"])
+                continue
+            self.db.update(video["id"], content_hash=content_hash)
             log.info("[%d/%d] Processing #%d %r ...", n, len(selected), video["id"], video["title"])
             try:
                 out, duration = process_video(
-                    Path(video["file_path"] or ""), self.cfg.paths.processed_dir,
+                    src, self.cfg.paths.processed_dir,
                     max_duration=p.max_duration_seconds, width=p.width, height=p.height,
-                    bitrate=p.video_bitrate,
+                    bitrate=p.video_bitrate, name=f"{video['id']}_{src.stem}",
                 )
             except ProcessingError as exc:
                 self._fail(video, "processing", exc)
@@ -166,6 +247,17 @@ class Pipeline:
             log.info("%d video(s) waiting for free slots", len(ready) - len(slots))
         return min(len(ready), len(slots))
 
+    def final_metadata(self, video) -> tuple[str, str, list[str]]:
+        """Title/description actually sent to YouTube, after the [youtube] overrides."""
+        yt = self.cfg.youtube
+        title = yt.title.strip() or video["yt_title"]
+        if yt.description == "none":
+            # Keep a required licence credit (CC BY); otherwise send no description at all.
+            description = f"Credit: {video['attribution']}" if video["attribution"] else ""
+        else:
+            description = video["yt_description"] or ""
+        return title, description, json.loads(video["yt_tags"] or "[]")
+
     # 6. Upload -------------------------------------------------------------------
     def upload_due(self, now: datetime | None = None, dry_run: bool = False) -> int:
         now = now or datetime.now(timezone.utc)
@@ -173,7 +265,9 @@ class Pipeline:
         uploaded = 0
         for video in due:
             if dry_run:
-                log.info("[dry-run] would upload #%d %r (private)", video["id"], video["yt_title"])
+                title, description, _ = self.final_metadata(video)
+                log.info("[dry-run] would upload #%d %r (%s), description: %r",
+                         video["id"], title, self.cfg.youtube.privacy, description[:60])
                 continue
             self.db.set_status(video["id"], "uploading", None, attempts=video["attempts"] + 1)
             try:
@@ -181,14 +275,22 @@ class Pipeline:
                     if self._uploader_factory is None:
                         raise UploadError("no uploader configured")
                     self._uploader = self._uploader_factory()
+                title, description, tags = self.final_metadata(video)
                 yt_id = self._uploader.upload(
-                    Path(video["processed_path"]), title=video["yt_title"],
-                    description=video["yt_description"], tags=json.loads(video["yt_tags"] or "[]"),
+                    Path(video["processed_path"]), title=title, description=description, tags=tags,
                     category_id=self.cfg.youtube.category_id, language=self.cfg.youtube.default_language,
+                    privacy=self.cfg.youtube.privacy,
                 )
+            except YouTubeAuthError as exc:
+                # Not the video's fault: undo the attempt and stop until the user logs in again.
+                self.db.set_status(video["id"], "scheduled", "waiting for YouTube login",
+                                   attempts=video["attempts"], last_error=str(exc))
+                log.error("%s", exc)
+                break
             except QuotaExceededError as exc:
                 # Put it back and stop for today; the next run will pick it up.
-                self.db.set_status(video["id"], "scheduled", "quota exceeded", last_error=str(exc))
+                self.db.set_status(video["id"], "scheduled", "quota exceeded",
+                                   attempts=video["attempts"], last_error=str(exc))
                 log.warning("YouTube quota exceeded; stopping uploads for this run")
                 break
             except Exception as exc:  # noqa: BLE001 - every failure must be recorded
@@ -200,8 +302,11 @@ class Pipeline:
                     self._fail(video, "upload", exc)
                 log.exception("Upload of #%d failed", video["id"])
                 continue
-            self.db.set_status(video["id"], "uploaded", "private", youtube_video_id=yt_id)
-            log.info("Uploaded #%d as https://youtu.be/%s (private)", video["id"], yt_id)
+            # Record what was actually sent (the overrides may differ from the AI's version).
+            privacy = getattr(self._uploader, "last_privacy", None) or self.cfg.youtube.privacy
+            self.db.set_status(video["id"], "uploaded", privacy, youtube_video_id=yt_id,
+                               yt_title=title, yt_description=description)
+            log.info("Uploaded #%d as https://youtu.be/%s (%s)", video["id"], yt_id, privacy)
             uploaded += 1
         return uploaded
 
@@ -226,14 +331,45 @@ class Pipeline:
         return count
 
     # -------------------------------------------------------------------------
-    def run_all(self, source: VideoSource) -> dict[str, int]:
+    def prepare(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+        """discover -> analyze -> process -> metadata (everything except scheduling)."""
+        if not isinstance(sources, list):
+            sources = [sources]
         return {
-            "discovered": self.discover(source),
+            "discovered": sum(self.discover(source) for source in sources),
             "selected": self.analyze_and_rank(),
             "processed": self.process(),
             "metadata": self.generate_metadata(),
-            "scheduled": self.schedule(),
         }
+
+    def run_all(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+        return {**self.prepare(sources), "scheduled": self.schedule()}
+
+    def upload_now(self, sources: VideoSource | list[VideoSource],
+                   dry_run: bool = False) -> dict[str, int]:
+        """Prepare everything, then upload every ready or scheduled video immediately
+        instead of waiting for its slot, with the configured privacy. Whatever the daily quota
+        doesn't allow stays queued for the next run."""
+        stats = self.prepare(sources)
+        queue = self.db.by_status("metadata_ready") + list(self.db.conn.execute(
+            "SELECT * FROM videos WHERE status = 'scheduled' ORDER BY scheduled_at"))
+        if dry_run:
+            for video in queue:
+                title, description, _ = self.final_metadata(video)
+                log.info("[dry-run] would upload #%d %r now (%s), description: %r",
+                         video["id"], title, self.cfg.youtube.privacy, description[:60])
+            return {**stats, "queued": len(queue), "uploaded": 0}
+        now = datetime.now(timezone.utc)
+        stamp = scheduler.to_iso(now)
+        for video in queue:
+            self.db.set_status(video["id"], "scheduled", "upload now", scheduled_at=stamp)
+        if len(queue) > 6:
+            log.warning("%d videos queued; YouTube's free daily quota allows about 6 uploads, "
+                        "the rest will stay queued for the next run", len(queue))
+        uploaded = self.upload_due(now=now)
+        remaining = len(self.db.by_status("scheduled"))
+        log.info("Upload now: %d uploaded, %d still queued", uploaded, remaining)
+        return {**stats, "uploaded": uploaded, "still_queued": remaining}
 
     def _fail(self, video, stage: str, exc: Exception) -> None:
         log.error("%s failed for #%d: %s", stage, video["id"], exc)
