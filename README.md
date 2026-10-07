@@ -32,6 +32,7 @@ shortpipe/
   sources/
     base.py           VideoSource interface (add new authorized sources here)
     local_dataset.py  JSON-manifest dataset with license + stats per video
+    tiktok.py         your own TikTok videos via the official Display API (Login Kit + PKCE)
     rights.py         authorization gate (license, rights holder, attribution)
   ai/
     client.py         AI providers with JSON-schema output: Ollama (local), Claude API, offline heuristics
@@ -123,6 +124,39 @@ Anything else is rejected at discovery and is never processed. The `stats` can c
 analytics export or be synthetic. To add another permitted source (for example your own channel's
 analytics), implement `VideoSource.discover()`.
 
+### Using your own TikTok videos
+
+The `tiktok` source uses TikTok's official **Display API**. It lists the videos posted by the account
+you log in with, together with their view, like, comment and share counts. The pipeline ranks those
+with AI, uploads the best ones to YouTube as private videos, and schedules 4–5 a day, like any other
+source.
+
+The source doesn't scrape TikTok or download other people's videos. The Display API only returns
+your own videos and has no download endpoint, so you supply the video files yourself, from TikTok's
+data export or "Save video" on your own posts.
+
+1. **Create a TikTok app (free).** Log in at https://developers.tiktok.com, then go to **Manage apps** →
+   **Connect an app**. Add the **Login Kit** product with the **Desktop** platform, and the scopes
+   `user.info.basic` and `video.list`. Register this redirect URI:
+   `http://localhost:8765/callback/`. Use **Sandbox** mode and add your TikTok account as a target
+   user. You don't need app review.
+2. **Configure.** Copy the client key and client secret, then:
+   ```bash
+   export TIKTOK_CLIENT_KEY=...  TIKTOK_CLIENT_SECRET=...
+   ```
+   In `config.toml`, set `enabled = ["tiktok"]` under `[sources]`.
+3. **Log in.** Run `python -m shortpipe tiktok-auth --no-browser` and open the printed URL. The
+   token is saved in `secrets/tiktok_token.json` and refreshed automatically.
+4. **Add your video files.** Export your data from TikTok (Settings → Account → Download your data),
+   or save your own posts. Put the files in `data/tiktok/`, named `<video_id>.mp4`. A filename that
+   contains the id also works. `python -m shortpipe status` lists the ids it is waiting for.
+5. **Run** `python -m shortpipe run` as usual. A selected video whose file isn't there yet stays
+   `selected` with "waiting for local file", and is processed on the first run after you add it.
+
+TikTok's **Research API** (approved academic access only) returns metadata for popular public
+videos, and could feed trend analysis into the ranking. It doesn't provide video files, and
+re-uploading other creators' content isn't permitted, so this project doesn't use it for uploads.
+
 ## Design notes
 
 - **Uploads are always private.** `privacyStatus` is fixed to `"private"` in `youtube/uploader.py`
@@ -139,12 +173,19 @@ analytics), implement `VideoSource.discover()`.
   - **Claude:** calls `claude-opus-5-5` (change with `model` / `CLAUDE_MODEL`) with structured
     outputs and adjustable `effort`. Server-side fallbacks are on, so if the model declines a request,
     the API retries it on a fallback model.
+- **Duplicates.** Each source file is hashed (SHA-256) before processing. A file identical to one
+  already processed, scheduled or uploaded is rejected as `duplicate of #N`, even when it comes
+  from a different source or has a different name. The same TikTok id is never imported twice.
 - **Error handling.** The Anthropic SDK retries rate limits, 5xx and network errors with backoff
   (`ai.max_retries`). Provider problems (Ollama not running, model not pulled, missing or invalid
   API key) stop the stage without touching any video. Other
   AI errors mark just that video `failed`, and `retry-failed` sends it back. Uploads are
   resumable, retry 5xx and network errors with exponential backoff, and a video is marked `failed`
-  after 3 attempts. Every failure is stored in `last_error` and the `events` table.
+  after 3 attempts. An expired or revoked YouTube login, or a used-up quota, stops the upload run
+  without using up the videos' attempts. TikTok rate limits and 5xx errors are retried with backoff.
+  An expired TikTok login stops the run and asks you to run `tiktok-auth`. Other TikTok failures
+  are logged and skipped, so the other sources still run. Every failure is stored in `last_error`
+  and the `events` table.
 - **Auditability.** Every AI prompt and raw response is stored in `ai_decisions`, so you can show
   why each video was selected or rejected and what metadata the model proposed.
 - **AI disclosure.** Generated descriptions end with a note that the metadata was AI-assisted, and

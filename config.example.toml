@@ -8,6 +8,20 @@ log_dir = "logs"
 client_secrets = "secrets/client_secret.json"   # OAuth client from Google Cloud Console
 token_file = "secrets/youtube_token.json"
 
+[sources]
+# "local"  = data/dataset/manifest.json (your own clips or licensed test clips)
+# "tiktok" = your own TikTok account via the official Display API (see [tiktok])
+enabled = ["local"]
+
+[tiktok]
+# From your app on developers.tiktok.com. Prefer env vars TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET.
+client_key = ""
+client_secret = ""
+video_dir = "data/tiktok"        # put your exported videos here as <video_id>.mp4
+token_file = "secrets/tiktok_token.json"
+redirect_port = 8765             # register http://localhost:8765/callback/ as the Desktop redirect URI
+max_videos = 50
+
 [ai]
 # "ollama"  = local model on your computer (free, no account; install from https://ollama.com)
 # "claude"  = Claude API (needs ANTHROPIC_API_KEY and API credit)

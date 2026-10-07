@@ -46,7 +46,8 @@ def get_credentials(client_secrets: Path, token_file: Path, *, interactive: bool
             creds = None
 
     if not interactive:
-        raise RuntimeError("YouTube credentials missing or expired; run `python -m shortpipe auth`")
+        from .uploader import YouTubeAuthError
+        raise YouTubeAuthError("YouTube credentials missing or expired; run `python -m shortpipe auth`")
     if not client_secrets.exists():
         raise FileNotFoundError(f"OAuth client file not found: {client_secrets}")
 

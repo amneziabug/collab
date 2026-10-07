@@ -14,7 +14,7 @@ from .config import load_config
 from .db import Database
 from .logging_setup import setup_logging
 from .pipeline import Pipeline
-from .sources import LocalDatasetSource
+from .sources import LocalDatasetSource, TikTokAuth, TikTokAuthError, TikTokDisplaySource
 
 log = logging.getLogger("shortpipe")
 
@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("make-demo-dataset", help="create synthetic self-owned test videos")
+    t = sub.add_parser("tiktok-auth", help="log in to your TikTok account (Display API)")
+    t.add_argument("--no-browser", action="store_true", help="print URL instead of opening a browser")
     a = sub.add_parser("auth", help="run YouTube OAuth flow and store token")
     a.add_argument("--no-browser", action="store_true", help="print URL instead of opening a browser")
     a.add_argument("--port", type=int, default=8080)
@@ -79,14 +81,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Authorized. Token stored in {cfg.paths.token_file}")
         return 0
 
+    if args.command == "tiktok-auth":
+        try:
+            _tiktok_auth(cfg).login(open_browser=not args.no_browser)
+        except TikTokAuthError as exc:
+            log.error("%s", exc)
+            return 1
+        print(f"Logged in to TikTok. Token stored in {cfg.tiktok.token_file}")
+        return 0
+
     db = Database(cfg.paths.database)
     pipe = Pipeline(cfg, db, ai_factory=lambda: make_ai_client(cfg),
                     uploader_factory=_uploader_factory(cfg))
-    source = LocalDatasetSource(cfg.paths.dataset_manifest)
+    try:
+        sources = _sources(cfg)
+    except TikTokAuthError as exc:
+        log.error("%s", exc)
+        db.close()
+        return 1
 
     try:
         if args.command == "discover":
-            pipe.discover(source)
+            for source in sources:
+                pipe.discover(source)
         elif args.command == "analyze":
             pipe.analyze_and_rank()
         elif args.command == "process":
@@ -96,16 +113,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "schedule":
             pipe.schedule()
         elif args.command == "run":
-            print(json.dumps(pipe.run_all(source), indent=2))
+            print(json.dumps(pipe.run_all(sources), indent=2))
         elif args.command == "upload-due":
             pipe.upload_due(dry_run=args.dry_run)
         elif args.command == "daemon":
-            _daemon(pipe, source, args.interval, args.dry_run)
+            _daemon(pipe, sources, args.interval, args.dry_run)
         elif args.command == "retry-failed":
             pipe.retry_failed()
         elif args.command == "status":
             _status(db, args.events)
-    except (AIError, FileNotFoundError) as exc:
+    except (AIError, FileNotFoundError, TikTokAuthError) as exc:
         log.error("%s", exc)
         return 1
     finally:
@@ -113,7 +130,22 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _daemon(pipe: Pipeline, source, interval: int, dry_run: bool) -> None:
+def _tiktok_auth(cfg) -> TikTokAuth:
+    return TikTokAuth(cfg.tiktok.client_key, cfg.tiktok.client_secret, cfg.tiktok.token_file,
+                      cfg.tiktok.redirect_port)
+
+
+def _sources(cfg) -> list:
+    sources = []
+    if "local" in cfg.sources.enabled:
+        sources.append(LocalDatasetSource(cfg.paths.dataset_manifest))
+    if "tiktok" in cfg.sources.enabled:
+        sources.append(TikTokDisplaySource(_tiktok_auth(cfg), cfg.tiktok.video_dir,
+                                           cfg.tiktok.max_videos))
+    return sources
+
+
+def _daemon(pipe: Pipeline, sources, interval: int, dry_run: bool) -> None:
     stop = False
 
     def _handle(signum, _frame):
@@ -126,7 +158,7 @@ def _daemon(pipe: Pipeline, source, interval: int, dry_run: bool) -> None:
     log.info("Daemon started (interval %ss, dry_run=%s)", interval, dry_run)
     while not stop:
         try:
-            pipe.run_all(source)
+            pipe.run_all(sources)
             pipe.upload_due(dry_run=dry_run)
         except Exception:  # noqa: BLE001 - keep the daemon alive; error is logged
             log.exception("Pipeline cycle failed")
@@ -149,6 +181,15 @@ def _status(db: Database, n_events: int) -> None:
         for r in upcoming:
             extra = f" -> youtu.be/{r['youtube_video_id']}" if r["youtube_video_id"] else ""
             print(f"  {r['scheduled_at']}  #{r['id']:<4} {r['status']:<10} {r['yt_title']}{extra}")
+    waiting = db.conn.execute(
+        "SELECT id, source, source_id, title FROM videos "
+        "WHERE status = 'selected' AND status_reason = 'waiting for local file' ORDER BY id"
+    ).fetchall()
+    if waiting:
+        print("\nWaiting for video files (add them, then `run` again):")
+        for r in waiting:
+            hint = f"data/tiktok/{r['source_id']}.mp4" if r["source"] == "tiktok" else "file in manifest"
+            print(f"  #{r['id']:<4} {r['title']}  ->  {hint}")
     print(f"\nRecent events (now {datetime.now(timezone.utc).isoformat(timespec='seconds')}):")
     for e in db.recent_events(n_events):
         print(f"  {e['created_at']}  #{e['video_id'] or '-':<4} {e['event']:<22} {e['detail'] or ''}")

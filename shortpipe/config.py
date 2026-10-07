@@ -66,8 +66,25 @@ class YouTubeConfig:
 
 
 @dataclass
+class SourcesConfig:
+    enabled: list[str] = field(default_factory=lambda: ["local"])  # "local", "tiktok"
+
+
+@dataclass
+class TikTokConfig:
+    client_key: str = ""        # or env TIKTOK_CLIENT_KEY
+    client_secret: str = ""     # or env TIKTOK_CLIENT_SECRET (prefer the env var)
+    video_dir: Path = Path("data/tiktok")
+    token_file: Path = Path("secrets/tiktok_token.json")
+    redirect_port: int = 8765
+    max_videos: int = 50
+
+
+@dataclass
 class Config:
     paths: Paths = field(default_factory=Paths)
+    sources: SourcesConfig = field(default_factory=SourcesConfig)
+    tiktok: TikTokConfig = field(default_factory=TikTokConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
@@ -102,6 +119,11 @@ def load_config(path: str | Path | None = None) -> Config:
                 raise ValueError(f"Unknown config section: [{section}]")
             _apply(section, getattr(cfg, section), values)
 
+    cfg.tiktok.client_key = os.environ.get("TIKTOK_CLIENT_KEY", cfg.tiktok.client_key)
+    cfg.tiktok.client_secret = os.environ.get("TIKTOK_CLIENT_SECRET", cfg.tiktok.client_secret)
+    unknown = set(cfg.sources.enabled) - {"local", "tiktok"}
+    if unknown:
+        raise ValueError(f"sources.enabled has unknown source(s): {sorted(unknown)}")
     if host := os.environ.get("OLLAMA_HOST"):
         cfg.ai.ollama_url = host
     if model := os.environ.get("CLAUDE_MODEL"):

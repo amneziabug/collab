@@ -3,6 +3,7 @@ so stages are idempotent and can be re-run (or run separately from cron)."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -17,12 +18,20 @@ from .config import Config
 from .db import Database
 from .processing import ProcessingError, process_video
 from .ranking import final_score
-from .sources import VideoSource, check_rights
-from .youtube.uploader import QuotaExceededError, UploadError
+from .sources import TikTokAuthError, TikTokError, VideoSource, check_rights
+from .youtube.uploader import QuotaExceededError, UploadError, YouTubeAuthError
 
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Pipeline:
@@ -44,7 +53,15 @@ class Pipeline:
     # 1. Discovery ------------------------------------------------------------
     def discover(self, source: VideoSource) -> int:
         new = 0
-        for item in source.discover():
+        try:
+            items = list(source.discover())
+        except TikTokAuthError:
+            raise  # login problem: stop and tell the user to re-authenticate
+        except (TikTokError, OSError) as exc:
+            log.error("Discovery from %s failed: %s", source.name, exc)
+            self.db.log_event(None, "discovery_failed", {"source": source.name, "error": str(exc)})
+            return 0
+        for item in items:
             data = item.to_dict()
             video_id, created = self.db.upsert_discovered(data)
             if not created:
@@ -114,10 +131,27 @@ class Pipeline:
         done = 0
         selected = self.db.by_status("selected")
         for n, video in enumerate(selected, start=1):
+            src = Path(video["file_path"] or "")
+            if not video["file_path"] or not src.is_file():
+                # Not an error: e.g. a TikTok video whose export hasn't been copied in yet.
+                if video["status_reason"] != "waiting for local file":
+                    self.db.set_status(video["id"], "selected", "waiting for local file")
+                log.warning("[%d/%d] #%d %r: no local video file yet (%s); will retry next run",
+                            n, len(selected), video["id"], video["title"], video["file_path"] or "not found")
+                continue
+            content_hash = file_sha256(src)
+            duplicate = self.db.find_by_hash(content_hash, video["id"])
+            if duplicate:
+                self.db.set_status(video["id"], "rejected", f"duplicate of #{duplicate['id']}",
+                                   content_hash=content_hash)
+                log.info("[%d/%d] #%d %r rejected: same file as #%d", n, len(selected),
+                         video["id"], video["title"], duplicate["id"])
+                continue
+            self.db.update(video["id"], content_hash=content_hash)
             log.info("[%d/%d] Processing #%d %r ...", n, len(selected), video["id"], video["title"])
             try:
                 out, duration = process_video(
-                    Path(video["file_path"] or ""), self.cfg.paths.processed_dir,
+                    src, self.cfg.paths.processed_dir,
                     max_duration=p.max_duration_seconds, width=p.width, height=p.height,
                     bitrate=p.video_bitrate,
                 )
@@ -188,9 +222,16 @@ class Pipeline:
                     description=video["yt_description"], tags=json.loads(video["yt_tags"] or "[]"),
                     category_id=self.cfg.youtube.category_id, language=self.cfg.youtube.default_language,
                 )
+            except YouTubeAuthError as exc:
+                # Not the video's fault: undo the attempt and stop until the user logs in again.
+                self.db.set_status(video["id"], "scheduled", "waiting for YouTube login",
+                                   attempts=video["attempts"], last_error=str(exc))
+                log.error("%s", exc)
+                break
             except QuotaExceededError as exc:
                 # Put it back and stop for today; the next run will pick it up.
-                self.db.set_status(video["id"], "scheduled", "quota exceeded", last_error=str(exc))
+                self.db.set_status(video["id"], "scheduled", "quota exceeded",
+                                   attempts=video["attempts"], last_error=str(exc))
                 log.warning("YouTube quota exceeded; stopping uploads for this run")
                 break
             except Exception as exc:  # noqa: BLE001 - every failure must be recorded
@@ -228,9 +269,11 @@ class Pipeline:
         return count
 
     # -------------------------------------------------------------------------
-    def run_all(self, source: VideoSource) -> dict[str, int]:
+    def run_all(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+        if not isinstance(sources, list):
+            sources = [sources]
         return {
-            "discovered": self.discover(source),
+            "discovered": sum(self.discover(source) for source in sources),
             "selected": self.analyze_and_rank(),
             "processed": self.process(),
             "metadata": self.generate_metadata(),

@@ -22,6 +22,10 @@ class UploadError(RuntimeError):
     pass
 
 
+class YouTubeAuthError(UploadError):
+    """Login missing, expired or revoked; run `python -m shortpipe auth`."""
+
+
 class QuotaExceededError(UploadError):
     """Daily API quota used up; stop uploading until it resets (midnight Pacific)."""
 
@@ -76,6 +80,9 @@ class YouTubeUploader:
                     log.debug("Upload %s: %d%%", file_path.name, int(status.progress() * 100))
             except HttpError as exc:
                 reason = _error_reason(exc)
+                if exc.resp.status == 401:
+                    raise YouTubeAuthError(f"YouTube rejected the login ({reason or 'unauthorized'}); "
+                                           "run `python -m shortpipe auth`") from exc
                 if exc.resp.status == 403 and reason in {"quotaExceeded", "uploadLimitExceeded"}:
                     raise QuotaExceededError(reason) from exc
                 if exc.resp.status not in RETRIABLE_STATUS:

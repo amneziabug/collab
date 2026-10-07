@@ -13,4 +13,6 @@ data/processed/*
 !data/processed/.gitkeep
 data/dataset/*
 !data/dataset/.gitkeep
+data/tiktok/*
+!data/tiktok/.gitkeep
 *.db
