@@ -304,7 +304,8 @@ class Pipeline:
         return count
 
     # -------------------------------------------------------------------------
-    def run_all(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+    def prepare(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+        """discover -> analyze -> process -> metadata (everything except scheduling)."""
         if not isinstance(sources, list):
             sources = [sources]
         return {
@@ -312,8 +313,34 @@ class Pipeline:
             "selected": self.analyze_and_rank(),
             "processed": self.process(),
             "metadata": self.generate_metadata(),
-            "scheduled": self.schedule(),
         }
+
+    def run_all(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
+        return {**self.prepare(sources), "scheduled": self.schedule()}
+
+    def upload_now(self, sources: VideoSource | list[VideoSource],
+                   dry_run: bool = False) -> dict[str, int]:
+        """Prepare everything, then upload every ready or scheduled video immediately
+        instead of waiting for its slot. Uploads stay private. Whatever the daily quota
+        doesn't allow stays queued for the next run."""
+        stats = self.prepare(sources)
+        queue = self.db.by_status("metadata_ready") + list(self.db.conn.execute(
+            "SELECT * FROM videos WHERE status = 'scheduled' ORDER BY scheduled_at"))
+        if dry_run:
+            for video in queue:
+                log.info("[dry-run] would upload #%d %r now (private)", video["id"], video["yt_title"])
+            return {**stats, "queued": len(queue), "uploaded": 0}
+        now = datetime.now(timezone.utc)
+        stamp = scheduler.to_iso(now)
+        for video in queue:
+            self.db.set_status(video["id"], "scheduled", "upload now", scheduled_at=stamp)
+        if len(queue) > 6:
+            log.warning("%d videos queued; YouTube's free daily quota allows about 6 uploads, "
+                        "the rest will stay queued for the next run", len(queue))
+        uploaded = self.upload_due(now=now)
+        remaining = len(self.db.by_status("scheduled"))
+        log.info("Upload now: %d uploaded, %d still queued", uploaded, remaining)
+        return {**stats, "uploaded": uploaded, "still_queued": remaining}
 
     def _fail(self, video, stage: str, exc: Exception) -> None:
         log.error("%s failed for #%d: %s", stage, video["id"], exc)

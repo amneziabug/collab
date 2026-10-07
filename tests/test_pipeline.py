@@ -177,3 +177,39 @@ def test_youtube_auth_error_does_not_use_up_attempts(cfg, db):
     for vid in ids:
         row = db.get(vid)
         assert row["status"] == "scheduled" and row["attempts"] == 0
+
+
+@needs_ffmpeg
+def test_upload_now_uploads_everything_immediately(cfg, db, pipeline, uploader):
+    manifest = make_demo_dataset(cfg.paths.dataset_manifest.parent, seconds=1)
+    source = LocalDatasetSource(manifest)
+    preview = pipeline.upload_now(source, dry_run=True)
+    assert preview["queued"] == 4 and uploader.calls == []
+    assert _statuses(db)["demo-001"] == "metadata_ready"      # dry run changed nothing
+    result = pipeline.upload_now(source)
+    assert result["uploaded"] == 4 and result["still_queued"] == 0
+    assert len(uploader.calls) == 4
+    assert list(_statuses(db).values()).count("uploaded") == 4
+
+
+def test_upload_now_keeps_rest_queued_on_quota(cfg, db):
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+    from shortpipe.youtube.uploader import QuotaExceededError
+
+    class QuotaAfterOne:
+        n = 0
+
+        def upload(self, *a, **k):
+            self.n += 1
+            if self.n > 1:
+                raise QuotaExceededError("quotaExceeded")
+            return "vid1"
+
+    for i in range(3):
+        vid, _ = db.upsert_discovered({"source": "t", "source_id": str(i), "title": "x"})
+        db.update(vid, status="metadata_ready", processed_path="/x.mp4", yt_title=f"t{i}",
+                  yt_description="d", yt_tags=[])
+    result = Pipeline(cfg, db, OfflineClient, lambda: QuotaAfterOne()).upload_now([])
+    assert result["uploaded"] == 1 and result["still_queued"] == 2
+    assert all(r["attempts"] == 0 for r in db.by_status("scheduled"))

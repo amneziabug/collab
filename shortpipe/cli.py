@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
                         ("run", "discover -> analyze -> process -> metadata -> schedule")]:
         sub.add_parser(name, help=help_)
     sub.add_parser("retry-failed", help="send failed videos back to the stage that failed")
+    now = sub.add_parser("upload-now", help="prepare all videos and upload them immediately (no schedule)")
+    now.add_argument("--dry-run", action="store_true", help="show what would be uploaded")
     up = sub.add_parser("upload-due", help="upload videos whose slot has arrived (cron-friendly)")
     up.add_argument("--dry-run", action="store_true")
     d = sub.add_parser("daemon", help="loop: run pipeline + upload due videos periodically")
@@ -114,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
             pipe.schedule()
         elif args.command == "run":
             print(json.dumps(pipe.run_all(sources), indent=2))
+        elif args.command == "upload-now":
+            print(json.dumps(pipe.upload_now(sources, dry_run=args.dry_run), indent=2))
         elif args.command == "upload-due":
             pipe.upload_due(dry_run=args.dry_run)
         elif args.command == "daemon":

@@ -104,7 +104,14 @@ python -m shortpipe status              # counts, schedule, recent events
 python -m shortpipe upload-due --dry-run
 python -m shortpipe upload-due          # uploads anything whose slot has passed
 python -m shortpipe daemon --interval 300
+python -m shortpipe upload-now --dry-run    # preview: everything ready, uploaded immediately
+python -m shortpipe upload-now              # prepare all videos and upload them right away
 ```
+
+`upload-now` doesn't need a running daemon or an open laptop. It runs discover → analyze →
+process → metadata, then uploads every ready or scheduled video at once (always private), and
+exits. YouTube's free quota allows about 6 uploads a day, so anything beyond that stays queued, and
+the next `upload-now` uploads it.
 
 Each stage can also be run on its own: `discover`, `analyze`, `process`, `metadata`, `schedule`.
 `retry-failed` sends `failed` videos back to the stage that failed, so the next `run` tries them again.
