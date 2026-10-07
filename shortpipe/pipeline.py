@@ -35,6 +35,14 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Flags that block a video even from your own folder; others (e.g. "not_educational") don't.
+SERIOUS_FLAGS = ("unsafe", "misleading", "harmful", "explicit", "violen", "hate", "danger")
+
+
+def is_serious_flag(flag: str) -> bool:
+    return any(word in flag.lower() for word in SERIOUS_FLAGS)
+
+
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, ai_factory: Callable[[], AIClient],
                  uploader_factory: Callable[[], object] | None = None,
@@ -113,9 +121,11 @@ class Pipeline:
             engagement, score = final_score(dict(video), result["relevance"], result["educational_value"])
             self.db.update(video["id"], topic=result["topic"], relevance_score=result["relevance"],
                            engagement_score=engagement, final_score=score)
-            if result["content_flags"]:
+            own_folder = video["source"] == "folder" and self.cfg.folder.auto_approve
+            serious = [f for f in result["content_flags"] if is_serious_flag(f)]
+            if serious or (result["content_flags"] and not own_folder):
                 self.db.set_status(video["id"], "rejected", f"AI flags: {result['content_flags']}")
-            elif video["source"] == "folder" and self.cfg.folder.auto_approve:
+            elif own_folder:
                 # Your own folder: everything is scheduled; the analysis still sets topic and score.
                 scored.append((score, video["id"], f"auto-approved (folder); {result['reasoning']}"))
             elif result["relevance"] < sel.min_relevance:
@@ -237,6 +247,17 @@ class Pipeline:
             log.info("%d video(s) waiting for free slots", len(ready) - len(slots))
         return min(len(ready), len(slots))
 
+    def final_metadata(self, video) -> tuple[str, str, list[str]]:
+        """Title/description actually sent to YouTube, after the [youtube] overrides."""
+        yt = self.cfg.youtube
+        title = yt.title.strip() or video["yt_title"]
+        if yt.description == "none":
+            # Keep a required licence credit (CC BY); otherwise send no description at all.
+            description = f"Credit: {video['attribution']}" if video["attribution"] else ""
+        else:
+            description = video["yt_description"] or ""
+        return title, description, json.loads(video["yt_tags"] or "[]")
+
     # 6. Upload -------------------------------------------------------------------
     def upload_due(self, now: datetime | None = None, dry_run: bool = False) -> int:
         now = now or datetime.now(timezone.utc)
@@ -244,7 +265,9 @@ class Pipeline:
         uploaded = 0
         for video in due:
             if dry_run:
-                log.info("[dry-run] would upload #%d %r (private)", video["id"], video["yt_title"])
+                title, description, _ = self.final_metadata(video)
+                log.info("[dry-run] would upload #%d %r (private), description: %r",
+                         video["id"], title, description[:60])
                 continue
             self.db.set_status(video["id"], "uploading", None, attempts=video["attempts"] + 1)
             try:
@@ -252,9 +275,9 @@ class Pipeline:
                     if self._uploader_factory is None:
                         raise UploadError("no uploader configured")
                     self._uploader = self._uploader_factory()
+                title, description, tags = self.final_metadata(video)
                 yt_id = self._uploader.upload(
-                    Path(video["processed_path"]), title=video["yt_title"],
-                    description=video["yt_description"], tags=json.loads(video["yt_tags"] or "[]"),
+                    Path(video["processed_path"]), title=title, description=description, tags=tags,
                     category_id=self.cfg.youtube.category_id, language=self.cfg.youtube.default_language,
                 )
             except YouTubeAuthError as exc:
@@ -278,7 +301,9 @@ class Pipeline:
                     self._fail(video, "upload", exc)
                 log.exception("Upload of #%d failed", video["id"])
                 continue
-            self.db.set_status(video["id"], "uploaded", "private", youtube_video_id=yt_id)
+            # Record what was actually sent (the overrides may differ from the AI's version).
+            self.db.set_status(video["id"], "uploaded", "private", youtube_video_id=yt_id,
+                               yt_title=title, yt_description=description)
             log.info("Uploaded #%d as https://youtu.be/%s (private)", video["id"], yt_id)
             uploaded += 1
         return uploaded
@@ -328,7 +353,9 @@ class Pipeline:
             "SELECT * FROM videos WHERE status = 'scheduled' ORDER BY scheduled_at"))
         if dry_run:
             for video in queue:
-                log.info("[dry-run] would upload #%d %r now (private)", video["id"], video["yt_title"])
+                title, description, _ = self.final_metadata(video)
+                log.info("[dry-run] would upload #%d %r now (private), description: %r",
+                         video["id"], title, description[:60])
             return {**stats, "queued": len(queue), "uploaded": 0}
         now = datetime.now(timezone.utc)
         stamp = scheduler.to_iso(now)

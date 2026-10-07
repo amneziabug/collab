@@ -163,6 +163,13 @@ owner = "Your Name"
   For each video, ffmpeg grabs `vision_frames` frames, and the vision model describes them. That
   description goes into the analysis and metadata prompts, and is stored in `visual_summary` and
   `ai_decisions` (stage `vision`). If the vision step fails, the video goes ahead without it.
+- **Fixed title / no description.** `[youtube] title = "#fyp #viral"` uses that title for every
+  upload, and `description = "none"` sends no description. A CC BY credit is still added when
+  the licence requires one. The AI still runs analysis and tags, and its suggested
+  title/description stay in `ai_decisions`. The overrides apply at upload time, so they also
+  cover videos that were already prepared.
+- In your own folder, only serious AI flags (unsafe, misleading, harmful, ...) block a video.
+  Minor ones like "not_educational" don't.
 - Files are tracked by name and size. Renaming or re-saving a file makes it a new video, but an
   identical copy of a file already used is rejected as a duplicate.
 - Videos longer than `processing.max_duration_seconds` (default 60) are cut to that length.

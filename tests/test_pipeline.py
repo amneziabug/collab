@@ -213,3 +213,53 @@ def test_upload_now_keeps_rest_queued_on_quota(cfg, db):
     result = Pipeline(cfg, db, OfflineClient, lambda: QuotaAfterOne()).upload_now([])
     assert result["uploaded"] == 1 and result["still_queued"] == 2
     assert all(r["attempts"] == 0 for r in db.by_status("scheduled"))
+
+
+def test_title_and_description_overrides(cfg, db, uploader):
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.title = "#fyp #viral"
+    cfg.youtube.description = "none"
+    vid, _ = db.upsert_discovered({"source": "folder", "source_id": "a", "title": "x"})
+    db.update(vid, status="scheduled", scheduled_at="2020-01-01T00:00:00+00:00", processed_path="/x.mp4",
+              yt_title="AI title", yt_description="AI description", yt_tags=["a"])
+    Pipeline(cfg, db, OfflineClient, lambda: uploader).upload_due()
+    _, kwargs = uploader.calls[0]
+    assert kwargs["title"] == "#fyp #viral" and kwargs["description"] == ""
+    row = db.get(vid)
+    assert row["yt_title"] == "#fyp #viral" and row["yt_description"] == ""
+
+
+def test_cc_by_credit_kept_without_description(cfg, db, uploader):
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.description = "none"
+    vid, _ = db.upsert_discovered({"source": "t", "source_id": "a", "title": "x", "attribution": "Jane, CC BY"})
+    db.update(vid, status="scheduled", scheduled_at="2020-01-01T00:00:00+00:00", processed_path="/x.mp4",
+              yt_title="T", yt_description="D", yt_tags=[])
+    Pipeline(cfg, db, OfflineClient, lambda: uploader).upload_due()
+    assert uploader.calls[0][1]["description"] == "Credit: Jane, CC BY"
+
+
+def test_own_folder_ignores_minor_flags_but_not_serious_ones(cfg, db, uploader):
+    from shortpipe.ai.client import AIClient
+    from shortpipe.pipeline import Pipeline
+
+    class Flagging(AIClient):
+        model = "flagging"
+        flags = {}
+
+        def complete_json(self, task, system, user, schema):
+            title = json.loads(user)["video"]["title"]
+            return {"topic": "other", "relevance": 0.0, "educational_value": 0.0,
+                    "content_flags": self.flags[title], "recommend": False, "reasoning": "-"}
+
+    Flagging.flags = {"minor": ["not_educational", "low_quality"], "bad": ["unsafe"]}
+    for t in Flagging.flags:
+        db.upsert_discovered({"source": "folder", "source_id": t, "title": t, "has_stats": False,
+                              "license": "owned", "rights_holder": "me"})
+    Pipeline(cfg, db, Flagging, lambda: uploader).analyze_and_rank()
+    st = _statuses(db)
+    assert st["minor"] == "selected" and st["bad"] == "rejected"

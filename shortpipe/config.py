@@ -65,6 +65,8 @@ class ScheduleConfig:
 class YouTubeConfig:
     category_id: str = "27"
     default_language: str = "en"
+    title: str = ""             # fixed title for every upload (e.g. "#fyp #viral"); "" = AI-written
+    description: str = "ai"     # "ai" = AI-written description, "none" = leave it empty
 
 
 @dataclass
@@ -146,6 +148,10 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError('ai.provider "openai" is no longer supported; use "ollama", "claude" or "offline"')
     if cfg.ai.effort not in {"low", "medium", "high", "xhigh", "max"}:
         raise ValueError("ai.effort must be one of low, medium, high, xhigh, max")
+    if cfg.youtube.description not in {"ai", "none"}:
+        raise ValueError('youtube.description must be "ai" or "none"')
+    if len(cfg.youtube.title) > 100 or any(c in cfg.youtube.title for c in "<>"):
+        raise ValueError("youtube.title must be at most 100 characters and contain no < or >")
     if not 1 <= cfg.schedule.uploads_per_day <= 6:
         # The default YouTube Data API quota (10,000 units/day) allows ~6 uploads.
         raise ValueError("schedule.uploads_per_day must be between 1 and 6")
