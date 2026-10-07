@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import scheduler
-from .ai import AIError, analyze_video, generate_metadata
+from .ai import AIConfigError, AIError, analyze_video, generate_metadata
 from .ai.client import AIClient
 from .config import Config
 from .db import Database
@@ -71,6 +71,8 @@ class Pipeline:
                 continue
             try:
                 prompt, result = analyze_video(self.ai, video, sel.topics, sel.min_relevance)
+            except AIConfigError:
+                raise  # provider unusable: stop without marking videos failed
             except AIError as exc:
                 self._fail(video, "analysis", exc)
                 continue
@@ -125,6 +127,8 @@ class Pipeline:
         for video in pending:
             try:
                 prompt, meta = generate_metadata(self.ai, video)
+            except AIConfigError:
+                raise
             except AIError as exc:
                 self._fail(video, "metadata", exc)
                 continue

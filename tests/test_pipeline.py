@@ -67,17 +67,17 @@ def test_schedule_respects_daily_limit(cfg, db, pipeline):
 
 
 def test_missing_api_key_does_not_fail_videos(cfg, db, uploader):
-    from shortpipe.ai import AIError
+    from shortpipe.ai import AIConfigError
     from shortpipe.pipeline import Pipeline
 
     def no_key():
-        raise AIError("OPENAI_API_KEY is not set")
+        raise AIConfigError("No Claude credentials found")
 
     vid, _ = db.upsert_discovered({"source": "t", "source_id": "1", "title": "science",
                                    "views": 5000, "license": "owned", "rights_holder": "me"})
     pipe = Pipeline(cfg, db, no_key, lambda: uploader)
     import pytest
-    with pytest.raises(AIError):
+    with pytest.raises(AIConfigError):
         pipe.analyze_and_rank()
     assert db.get(vid)["status"] == "discovered"
 

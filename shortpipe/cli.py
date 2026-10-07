@@ -54,7 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--events", type=int, default=15)
 
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except (ValueError, OSError) as exc:
+        print(f"Config error: {exc}")
+        return 2
     setup_logging(cfg.paths.log_dir, args.verbose)
 
     if args.command == "make-demo-dataset":
@@ -101,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             pipe.retry_failed()
         elif args.command == "status":
             _status(db, args.events)
-    except AIError as exc:
+    except (AIError, FileNotFoundError) as exc:
         log.error("%s", exc)
         return 1
     finally:

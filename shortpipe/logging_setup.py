@@ -41,5 +41,5 @@ def setup_logging(log_dir: Path, verbose: bool = False) -> None:
     root.addHandler(file_handler)
 
     # Google/HTTP client libraries are chatty at DEBUG.
-    for noisy in ("googleapiclient", "urllib3", "httpx", "openai"):
+    for noisy in ("googleapiclient", "urllib3", "httpx", "httpx2", "anthropic"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
