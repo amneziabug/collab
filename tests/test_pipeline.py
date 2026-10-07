@@ -64,3 +64,33 @@ def test_schedule_respects_daily_limit(cfg, db, pipeline):
     assert pipeline.schedule(now=now) == 8
     days = [r["scheduled_at"][:10] for r in db.by_status("scheduled")]
     assert days.count("2026-01-01") == 4 and days.count("2026-01-02") == 4
+
+
+def test_missing_api_key_does_not_fail_videos(cfg, db, uploader):
+    from shortpipe.ai import AIConfigError
+    from shortpipe.pipeline import Pipeline
+
+    def no_key():
+        raise AIConfigError("No Claude credentials found")
+
+    vid, _ = db.upsert_discovered({"source": "t", "source_id": "1", "title": "science",
+                                   "views": 5000, "license": "owned", "rights_holder": "me"})
+    pipe = Pipeline(cfg, db, no_key, lambda: uploader)
+    import pytest
+    with pytest.raises(AIConfigError):
+        pipe.analyze_and_rank()
+    assert db.get(vid)["status"] == "discovered"
+
+
+def test_retry_failed_resets_to_failed_stage(db, pipeline):
+    ids = {}
+    for stage in ("analysis", "processing", "metadata", "upload"):
+        vid, _ = db.upsert_discovered({"source": "t", "source_id": stage, "title": stage})
+        db.set_status(vid, "failed", f"{stage}: boom", attempts=3, last_error="boom")
+        ids[stage] = vid
+    assert pipeline.retry_failed() == 4
+    assert db.get(ids["analysis"])["status"] == "discovered"
+    assert db.get(ids["processing"])["status"] == "selected"
+    assert db.get(ids["metadata"])["status"] == "processed"
+    up = db.get(ids["upload"])
+    assert up["status"] == "metadata_ready" and up["attempts"] == 0 and up["last_error"] is None

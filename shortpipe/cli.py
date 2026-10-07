@@ -9,7 +9,7 @@ import signal
 import time
 from datetime import datetime, timezone
 
-from .ai import make_ai_client
+from .ai import AIError, make_ai_client
 from .config import load_config
 from .db import Database
 from .logging_setup import setup_logging
@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
                         ("schedule", "assign upload slots"),
                         ("run", "discover -> analyze -> process -> metadata -> schedule")]:
         sub.add_parser(name, help=help_)
+    sub.add_parser("retry-failed", help="send failed videos back to the stage that failed")
     up = sub.add_parser("upload-due", help="upload videos whose slot has arrived (cron-friendly)")
     up.add_argument("--dry-run", action="store_true")
     d = sub.add_parser("daemon", help="loop: run pipeline + upload due videos periodically")
@@ -53,12 +54,21 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--events", type=int, default=15)
 
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except (ValueError, OSError) as exc:
+        print(f"Config error: {exc}")
+        return 2
     setup_logging(cfg.paths.log_dir, args.verbose)
 
     if args.command == "make-demo-dataset":
         from .demo_dataset import make_demo_dataset
-        path = make_demo_dataset(cfg.paths.dataset_manifest.parent)
+        from .processing import ProcessingError
+        try:
+            path = make_demo_dataset(cfg.paths.dataset_manifest.parent)
+        except ProcessingError as exc:
+            log.error("%s", exc)
+            return 1
         print(f"Demo dataset written to {path}")
         return 0
 
@@ -91,8 +101,13 @@ def main(argv: list[str] | None = None) -> int:
             pipe.upload_due(dry_run=args.dry_run)
         elif args.command == "daemon":
             _daemon(pipe, source, args.interval, args.dry_run)
+        elif args.command == "retry-failed":
+            pipe.retry_failed()
         elif args.command == "status":
             _status(db, args.events)
+    except (AIError, FileNotFoundError) as exc:
+        log.error("%s", exc)
+        return 1
     finally:
         db.close()
     return 0

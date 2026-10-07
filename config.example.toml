@@ -1,4 +1,4 @@
-# Copy to config.toml and adjust. Secrets (OPENAI_API_KEY) come from the environment.
+# Copy to config.toml and adjust. Secrets (ANTHROPIC_API_KEY) come from the environment, never this file.
 
 [paths]
 database = "data/pipeline.db"
@@ -9,11 +9,18 @@ client_secrets = "secrets/client_secret.json"   # OAuth client from Google Cloud
 token_file = "secrets/youtube_token.json"
 
 [ai]
-model = "gpt-4.1-mini"     # override with OPENAI_MODEL
-temperature = 0.4
+# "ollama"  = local model on your computer (free, no account; install from https://ollama.com)
+# "claude"  = Claude API (needs ANTHROPIC_API_KEY and API credit)
+# "offline" = deterministic keyword rules (no AI; for tests/demos)
+provider = "ollama"
 max_retries = 3
-# "openai" uses the API; "offline" uses deterministic heuristics (no key needed; for tests/demos)
-provider = "openai"
+
+ollama_model = "llama3.2:3b"   # run `ollama pull llama3.2:3b` first; bigger = better but slower
+ollama_url = "http://localhost:11434"   # or set OLLAMA_HOST
+ollama_timeout = 300           # seconds per request; CPU-only machines can be slow
+
+model = "claude-opus-5-5"      # Claude API only; override with CLAUDE_MODEL
+effort = "medium"              # Claude API only: low | medium | high | xhigh | max
 
 [selection]
 # Topics you want the AI to favour when ranking

@@ -20,10 +20,15 @@ class Paths:
 
 @dataclass
 class AIConfig:
-    model: str = "gpt-4.1-mini"
-    temperature: float = 0.4
+    provider: str = "ollama"  # "ollama" | "claude" | "offline"
     max_retries: int = 3
-    provider: str = "openai"  # "openai" | "offline"
+    # Ollama (local model)
+    ollama_model: str = "llama3.2:3b"
+    ollama_url: str = "http://localhost:11434"
+    ollama_timeout: int = 300
+    # Claude API
+    model: str = "claude-opus-5-5"
+    effort: str = "medium"  # low | medium | high | xhigh | max
 
 
 @dataclass
@@ -69,13 +74,15 @@ class Config:
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
 
-    @property
-    def openai_api_key(self) -> str | None:
-        return os.environ.get("OPENAI_API_KEY")
+
+# Keys from older config files that are now ignored instead of rejected.
+_REMOVED_KEYS = {("ai", "temperature")}
 
 
-def _apply(section_obj, values: dict) -> None:
+def _apply(section: str, section_obj, values: dict) -> None:
     for key, value in values.items():
+        if (section, key) in _REMOVED_KEYS:
+            continue
         if not hasattr(section_obj, key):
             raise ValueError(f"Unknown config key: {type(section_obj).__name__}.{key}")
         current = getattr(section_obj, key)
@@ -93,13 +100,19 @@ def load_config(path: str | Path | None = None) -> Config:
         for section, values in raw.items():
             if not hasattr(cfg, section):
                 raise ValueError(f"Unknown config section: [{section}]")
-            _apply(getattr(cfg, section), values)
+            _apply(section, getattr(cfg, section), values)
 
-    if model := os.environ.get("OPENAI_MODEL"):
+    if host := os.environ.get("OLLAMA_HOST"):
+        cfg.ai.ollama_url = host
+    if model := os.environ.get("CLAUDE_MODEL"):
         cfg.ai.model = model
     if provider := os.environ.get("SHORTPIPE_AI_PROVIDER"):
         cfg.ai.provider = provider
 
+    if cfg.ai.provider == "openai":
+        raise ValueError('ai.provider "openai" is no longer supported; use "ollama", "claude" or "offline"')
+    if cfg.ai.effort not in {"low", "medium", "high", "xhigh", "max"}:
+        raise ValueError("ai.effort must be one of low, medium, high, xhigh, max")
     if not 1 <= cfg.schedule.uploads_per_day <= 6:
         # The default YouTube Data API quota (10,000 units/day) allows ~6 uploads.
         raise ValueError("schedule.uploads_per_day must be between 1 and 6")

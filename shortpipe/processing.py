@@ -18,7 +18,11 @@ class ProcessingError(RuntimeError):
 def require_ffmpeg() -> None:
     for tool in ("ffmpeg", "ffprobe"):
         if shutil.which(tool) is None:
-            raise ProcessingError(f"{tool} not found on PATH; install ffmpeg")
+            raise ProcessingError(
+                f"{tool} not found on PATH. Install ffmpeg first: "
+                "`sudo apt install ffmpeg` (Ubuntu/WSL), `brew install ffmpeg` (macOS), "
+                "`winget install ffmpeg` (Windows)"
+            )
 
 
 def probe(path: Path) -> dict:

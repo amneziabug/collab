@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from .processing import require_ffmpeg
+
 DEMO_VIDEOS = [
     ("demo-001", "Why the sky is blue in 30 seconds", "Rayleigh scattering explained simply.",
      ["science", "physics"], (52000, 6100, 310, 420), "owned"),
@@ -24,6 +26,7 @@ DEMO_VIDEOS = [
 
 
 def make_demo_dataset(out_dir: Path, seconds: int = 5) -> Path:
+    require_ffmpeg()
     out_dir.mkdir(parents=True, exist_ok=True)
     videos = []
     for i, (vid, title, desc, tags, stats, license_) in enumerate(DEMO_VIDEOS):
