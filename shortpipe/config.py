@@ -20,10 +20,15 @@ class Paths:
 
 @dataclass
 class AIConfig:
+    provider: str = "ollama"  # "ollama" | "claude" | "offline"
+    max_retries: int = 3
+    # Ollama (local model)
+    ollama_model: str = "llama3.2:3b"
+    ollama_url: str = "http://localhost:11434"
+    ollama_timeout: int = 300
+    # Claude API
     model: str = "claude-opus-5-5"
     effort: str = "medium"  # low | medium | high | xhigh | max
-    max_retries: int = 3
-    provider: str = "claude"  # "claude" | "offline"
 
 
 @dataclass
@@ -97,13 +102,15 @@ def load_config(path: str | Path | None = None) -> Config:
                 raise ValueError(f"Unknown config section: [{section}]")
             _apply(section, getattr(cfg, section), values)
 
+    if host := os.environ.get("OLLAMA_HOST"):
+        cfg.ai.ollama_url = host
     if model := os.environ.get("CLAUDE_MODEL"):
         cfg.ai.model = model
     if provider := os.environ.get("SHORTPIPE_AI_PROVIDER"):
         cfg.ai.provider = provider
 
     if cfg.ai.provider == "openai":
-        raise ValueError('ai.provider "openai" is no longer supported; use "claude" or "offline"')
+        raise ValueError('ai.provider "openai" is no longer supported; use "ollama", "claude" or "offline"')
     if cfg.ai.effort not in {"low", "medium", "high", "xhigh", "max"}:
         raise ValueError("ai.effort must be one of low, medium, high, xhigh, max")
     if not 1 <= cfg.schedule.uploads_per_day <= 6:

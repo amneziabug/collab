@@ -43,6 +43,14 @@ def build_prompt(video: dict, topics: list[str], min_relevance: float) -> str:
 def analyze_video(ai: AIClient, video, topics: list[str], min_relevance: float) -> tuple[str, dict]:
     prompt = build_prompt(dict(video), topics, min_relevance)
     result = ai.complete_json("video_analysis", SYSTEM_PROMPT, prompt, ANALYSIS_SCHEMA)
-    result["relevance"] = max(0.0, min(1.0, float(result["relevance"])))
-    result["educational_value"] = max(0.0, min(1.0, float(result["educational_value"])))
+    for key in ("relevance", "educational_value"):
+        result[key] = normalize_score(result[key])
     return prompt, result
+
+
+def normalize_score(value) -> float:
+    """Clamp to 0..1. Small local models sometimes answer on a 0-10 or 0-100 scale."""
+    value = float(value)
+    if value > 1:
+        value = value / 10 if value <= 10 else value / 100
+    return max(0.0, min(1.0, value))

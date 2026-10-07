@@ -1,7 +1,7 @@
 # shortpipe: AI-assisted short-form video pipeline (university project)
 
 A Python demo of AI-assisted automation: it ingests short videos from an **authorized** dataset,
-uses the Claude API to analyse and rank them, transcodes them to the Shorts format with ffmpeg,
+uses an AI model (a local model through Ollama by default, or the Claude API) to analyse and rank them, transcodes them to the Shorts format with ffmpeg,
 generates YouTube metadata with AI, and uploads them on a schedule (4–5 per day) as **private**
 videos through the YouTube Data API. Every step is recorded in SQLite and a JSON-lines log.
 
@@ -26,7 +26,7 @@ separately.
 
 ```
 shortpipe/
-  config.py           TOML config + env overrides (ANTHROPIC_API_KEY, CLAUDE_MODEL)
+  config.py           TOML config + env overrides (OLLAMA_HOST, ANTHROPIC_API_KEY, CLAUDE_MODEL)
   db.py               SQLite schema: videos, ai_decisions (prompt + raw response), events
   logging_setup.py    console logs + logs/pipeline.jsonl
   sources/
@@ -34,7 +34,7 @@ shortpipe/
     local_dataset.py  JSON-manifest dataset with license + stats per video
     rights.py         authorization gate (license, rights holder, attribution)
   ai/
-    client.py         Claude API (Anthropic SDK) with structured JSON output; offline heuristic fallback
+    client.py         AI providers with JSON-schema output: Ollama (local), Claude API, offline heuristics
     analysis.py       topic / relevance / educational value / content flags
     metadata.py       title, description, tags; enforces YouTube limits, adds credits + AI note
   ranking.py          engagement + reach + AI relevance → final score
@@ -55,8 +55,29 @@ tests/                pytest (offline AI + fake uploader; no network needed)
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt        # ffmpeg must also be installed
 cp config.example.toml config.toml
-export ANTHROPIC_API_KEY=sk-ant-...        # or set [ai] provider = "offline"
 ```
+
+### AI provider
+
+Choose the provider with `provider` under `[ai]` in `config.toml`.
+
+**`ollama` (default): a free local model.** It runs on your own computer, so you need no account or key.
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh   # Linux / WSL (macOS & Windows: installer on ollama.com)
+ollama pull llama3.2:3b                         # ~2 GB download, once
+ollama serve                                    # only if it isn't already running in the background
+```
+
+`llama3.2:3b` runs on most laptops, even without a GPU. On a machine with a decent GPU, a larger
+model (e.g. `qwen2.5:7b`, `llama3.1:8b`) gives better rankings and titles; pull it and set
+`ollama_model`. On WSL, install Ollama *inside* WSL, so that `localhost:11434` works. If it runs on
+the Windows side instead, set `ollama_url` / `OLLAMA_HOST` to the Windows host address.
+
+**`claude`: the Claude API.** You need an API key with credit from console.anthropic.com (billed
+separately from Claude.ai subscriptions). Set it with `export ANTHROPIC_API_KEY=sk-ant-...`.
+
+**`offline`: deterministic keyword rules.** No AI, but every other stage runs. Use it for tests and demos.
 
 ### YouTube OAuth
 
@@ -85,7 +106,7 @@ python -m shortpipe daemon --interval 300
 
 Each stage can also be run on its own: `discover`, `analyze`, `process`, `metadata`, `schedule`.
 `retry-failed` sends `failed` videos back to the stage that failed, so the next `run` tries them again.
-If the Claude API key is missing or invalid, `run` stops with an error before analysis and leaves the videos untouched.
+If the AI provider is unavailable (Ollama not running, model not pulled, missing API key), `run` stops with an error before analysis and leaves the videos untouched.
 
 Instead of `daemon`, you can use cron:
 
@@ -110,13 +131,17 @@ analytics), implement `VideoSource.discover()`.
 - **Quota.** The default YouTube Data API quota is 10,000 units/day and `videos.insert` costs about
   1,600, so `uploads_per_day` is limited to 1–6. On `quotaExceeded`, the video goes back to
   `scheduled` and uploading stops until the next run.
-- **Claude API.** Every AI call goes to `claude-opus-5-5` (change with `ai.model` or `CLAUDE_MODEL`) and
-  uses structured outputs (`output_config.format` with a JSON schema), so responses always parse into
-  the expected fields. `ai.effort` (`low` to `max`) trades reasoning depth for cost; `medium` is plenty
-  for ranking and metadata. Requests opt into server-side fallbacks, so if the model declines a
-  request the API retries it on a fallback model. A refusal that still happens fails only that video.
+- **AI providers.** All providers share one interface (`AIClient.complete_json`) and get the same
+  prompts and JSON schemas, so you can switch with one config line and compare the results.
+  - **Ollama:** the schema is passed as Ollama's `format` (structured outputs). Small local models
+    still sometimes skip fields or score on 0–10 instead of 0–1, so responses are validated against
+    the schema and retried, and scores are normalised to 0–1.
+  - **Claude:** calls `claude-opus-5-5` (change with `model` / `CLAUDE_MODEL`) with structured
+    outputs and adjustable `effort`. Server-side fallbacks are on, so if the model declines a request,
+    the API retries it on a fallback model.
 - **Error handling.** The Anthropic SDK retries rate limits, 5xx and network errors with backoff
-  (`ai.max_retries`). A missing or invalid API key stops the stage without touching any video. Other
+  (`ai.max_retries`). Provider problems (Ollama not running, model not pulled, missing or invalid
+  API key) stop the stage without touching any video. Other
   AI errors mark just that video `failed`, and `retry-failed` sends it back. Uploads are
   resumable, retry 5xx and network errors with exponential backoff, and a video is marked `failed`
   after 3 attempts. Every failure is stored in `last_error` and the `events` table.
