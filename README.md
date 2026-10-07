@@ -84,6 +84,8 @@ python -m shortpipe daemon --interval 300
 ```
 
 Each stage can also be run on its own: `discover`, `analyze`, `process`, `metadata`, `schedule`.
+`retry-failed` sends `failed` videos back to the stage that failed, so the next `run` tries them again.
+If the OpenAI key is missing, `run` stops with an error before analysis and leaves the videos untouched.
 
 Instead of `daemon`, you can use cron:
 

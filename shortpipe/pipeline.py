@@ -62,6 +62,8 @@ class Pipeline:
         sel = self.cfg.selection
         selected = 0
         candidates = self.db.by_status("discovered")
+        if candidates:
+            self.ai  # fail fast on config errors (e.g. missing API key) without marking videos failed
         scored = []
         for video in candidates:
             if video["views"] < sel.min_views:
@@ -117,7 +119,10 @@ class Pipeline:
     # 4. Metadata ---------------------------------------------------------------
     def generate_metadata(self) -> int:
         done = 0
-        for video in self.db.by_status("processed"):
+        pending = self.db.by_status("processed")
+        if pending:
+            self.ai  # fail fast on config errors without marking videos failed
+        for video in pending:
             try:
                 prompt, meta = generate_metadata(self.ai, video)
             except AIError as exc:
@@ -182,6 +187,26 @@ class Pipeline:
             log.info("Uploaded #%d as https://youtu.be/%s (private)", video["id"], yt_id)
             uploaded += 1
         return uploaded
+
+    # Recovery ------------------------------------------------------------------
+    # Status a failed video returns to, keyed by the stage that failed.
+    RETRY_STATUS = {"analysis": "discovered", "processing": "selected",
+                    "metadata": "processed", "upload": "metadata_ready"}
+
+    def retry_failed(self) -> int:
+        """Send failed videos back to the stage that failed so the next run retries them."""
+        count = 0
+        for video in self.db.by_status("failed"):
+            stage = (video["status_reason"] or "").split(":", 1)[0]
+            target = self.RETRY_STATUS.get(stage)
+            if target is None:
+                log.warning("#%d: unknown failed stage %r, skipping", video["id"], stage)
+                continue
+            self.db.set_status(video["id"], target, f"retry after {stage} failure",
+                               attempts=0, scheduled_at=None, last_error=None)
+            count += 1
+        log.info("Retry: %d failed video(s) reset", count)
+        return count
 
     # -------------------------------------------------------------------------
     def run_all(self, source: VideoSource) -> dict[str, int]:
