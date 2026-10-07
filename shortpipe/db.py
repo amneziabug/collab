@@ -125,6 +125,10 @@ class Database:
             "views", "likes", "comments", "shares",
         ]
         values = [item.get(c) for c in cols]
+        # Missing stats count as 0 (an explicit NULL would bypass the column default).
+        for i, c in enumerate(cols):
+            if c in ("views", "likes", "comments", "shares") and values[i] is None:
+                values[i] = 0
         cols += ["hashtags", "created_at", "updated_at"]
         values += [json.dumps(item.get("hashtags", [])), now, now]
         with self.tx() as c:
