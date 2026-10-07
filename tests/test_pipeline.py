@@ -94,3 +94,21 @@ def test_retry_failed_resets_to_failed_stage(db, pipeline):
     assert db.get(ids["metadata"])["status"] == "processed"
     up = db.get(ids["upload"])
     assert up["status"] == "metadata_ready" and up["attempts"] == 0 and up["last_error"] is None
+
+
+def test_selection_uses_score_not_model_recommend(cfg, db, uploader):
+    """A local model may answer relevance=1.0 but recommend=False; the score decides."""
+    from shortpipe.ai.client import AIClient
+    from shortpipe.pipeline import Pipeline
+
+    class Contradictory(AIClient):
+        model = "contradictory"
+
+        def complete_json(self, task, system, user, schema):
+            return {"topic": "science", "relevance": 1.0, "educational_value": 0.9,
+                    "content_flags": [], "recommend": False, "reasoning": "great but no"}
+
+    vid, _ = db.upsert_discovered({"source": "t", "source_id": "1", "title": "sky",
+                                   "views": 5000, "likes": 500})
+    Pipeline(cfg, db, Contradictory, lambda: uploader).analyze_and_rank()
+    assert db.get(vid)["status"] == "selected"

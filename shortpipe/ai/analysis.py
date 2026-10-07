@@ -10,6 +10,8 @@ SYSTEM_PROMPT = """You are a content analyst for a university project that curat
 educational videos. Given one video's metadata and the selection criteria, classify its topic,
 rate how relevant it is to the requested topics (0-1) and its educational value (0-1), and flag
 any problems (e.g. "misleading", "unsafe", "low_quality", "not_educational").
+Set `recommend` to true when relevance is at least `min_relevance` and there are no flags.
+Leave `content_flags` empty when there are no problems.
 Base your judgement only on the provided metadata. Be concise in `reasoning`."""
 
 ANALYSIS_SCHEMA = {

@@ -90,7 +90,9 @@ class Pipeline:
                            engagement_score=engagement, final_score=score)
             if result["content_flags"]:
                 self.db.set_status(video["id"], "rejected", f"AI flags: {result['content_flags']}")
-            elif not result["recommend"] or result["relevance"] < sel.min_relevance:
+            elif result["relevance"] < sel.min_relevance:
+                # Selection uses the numeric score only; the model's own yes/no is logged but not
+                # trusted, because small local models often contradict their scores.
                 self.db.set_status(video["id"], "rejected",
                                    f"relevance {result['relevance']:.2f}: {result['reasoning']}")
             else:
