@@ -1,1 +1,126 @@
-readme
+# shortpipe: AI-assisted short-form video pipeline (university project)
+
+A Python demo of AI-assisted automation: it ingests short videos from an **authorized** dataset,
+uses the OpenAI API to analyse and rank them, transcodes them to the Shorts format with ffmpeg,
+generates YouTube metadata with AI, and uploads them on a schedule (4–5 per day) as **private**
+videos through the YouTube Data API. Every step is recorded in SQLite and a JSON-lines log.
+
+## Pipeline
+
+```
+ manifest.json ──► discover ──► rights check ──► AI analysis + ranking ──► ffmpeg processing
+ (authorized          │             │ reject            │ reject                  │
+  dataset)            ▼             ▼                   ▼                         ▼
+                  SQLite: videos / ai_decisions / events         AI metadata (title/desc/tags)
+                                                                                  │
+                     YouTube Data API (private upload) ◄── upload-due ◄── scheduler (N slots/day)
+```
+
+Each video moves through these states, stored in `videos.status`:
+`discovered → selected → processed → metadata_ready → scheduled → uploading → uploaded`,
+with `rejected` (rights, views, relevance, AI flags) and `failed` (after retries) as exits.
+Each stage only picks up videos in its input state, so you can re-run stages safely and run them
+separately.
+
+## Project layout
+
+```
+shortpipe/
+  config.py           TOML config + env overrides (OPENAI_API_KEY, OPENAI_MODEL)
+  db.py               SQLite schema: videos, ai_decisions (prompt + raw response), events
+  logging_setup.py    console logs + logs/pipeline.jsonl
+  sources/
+    base.py           VideoSource interface (add new authorized sources here)
+    local_dataset.py  JSON-manifest dataset with license + stats per video
+    rights.py         authorization gate (license, rights holder, attribution)
+  ai/
+    client.py         OpenAI Responses API with strict JSON schema; offline heuristic fallback
+    analysis.py       topic / relevance / educational value / content flags
+    metadata.py       title, description, tags; enforces YouTube limits, adds credits + AI note
+  ranking.py          engagement + reach + AI relevance → final score
+  processing.py       ffmpeg: trim ≤60s, 1080x1920 pad, H.264/AAC, loudness normalisation
+  scheduler.py        evenly spaced daily slots in a local-time window
+  youtube/
+    auth.py           OAuth 2.0 installed-app flow, token cache + refresh
+    uploader.py       resumable upload, retries with backoff, quota handling, private only
+  pipeline.py         orchestration + error handling
+  cli.py              command-line entry point
+  demo_dataset.py     generates synthetic self-owned test clips
+tests/                pytest (offline AI + fake uploader; no network needed)
+```
+
+## Setup
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt        # ffmpeg must also be installed
+cp config.example.toml config.toml
+export OPENAI_API_KEY=sk-...               # or set [ai] provider = "offline"
+```
+
+### YouTube OAuth
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a project and enable
+   **YouTube Data API v3**.
+2. Configure the **OAuth consent screen** (External, Testing) and add your Google account as a
+   test user.
+3. Under **Credentials**, create an OAuth client ID of type **Desktop app**, download the JSON and
+   save it as `secrets/client_secret.json` (git-ignored).
+4. Run `python -m shortpipe auth`. On a headless server use `--no-browser` and forward the port
+   (`ssh -L 8080:localhost:8080 server`).
+
+The app only requests the `youtube.upload` scope. While the consent screen stays in "Testing",
+refresh tokens expire after 7 days; run `auth` again when `upload-due` reports expired credentials.
+
+## Usage
+
+```bash
+python -m shortpipe make-demo-dataset   # synthetic test clips + manifest (all self-owned)
+python -m shortpipe run                 # discover → analyze → process → metadata → schedule
+python -m shortpipe status              # counts, schedule, recent events
+python -m shortpipe upload-due --dry-run
+python -m shortpipe upload-due          # uploads anything whose slot has passed
+python -m shortpipe daemon --interval 300
+```
+
+Each stage can also be run on its own: `discover`, `analyze`, `process`, `metadata`, `schedule`.
+
+Instead of `daemon`, you can use cron:
+
+```cron
+*/10 * * * * cd /path/to/collab && .venv/bin/python -m shortpipe run && .venv/bin/python -m shortpipe upload-due
+```
+
+### Using your own dataset
+
+Put your clips in `data/dataset/` and describe them in `manifest.json` (format documented in
+`shortpipe/sources/local_dataset.py`). Every entry needs a `license` from
+`selection.allowed_licenses` and a `rights_holder`, and `cc-by` entries also need an `attribution`.
+Anything else is rejected at discovery and is never processed. The `stats` can come from your own
+analytics export or be synthetic. To add another permitted source (for example your own channel's
+analytics), implement `VideoSource.discover()`.
+
+## Design notes
+
+- **Uploads are always private.** `privacyStatus` is fixed to `"private"` in `youtube/uploader.py`
+  and can't be configured. `status.publishAt` is never set, because YouTube would make the
+  video public at that time. The "scheduled publication time" is when *our* scheduler uploads it.
+- **Quota.** The default YouTube Data API quota is 10,000 units/day and `videos.insert` costs about
+  1,600, so `uploads_per_day` is limited to 1–6. On `quotaExceeded`, the video goes back to
+  `scheduled` and uploading stops until the next run.
+- **Error handling.** OpenAI calls use the SDK's retries plus a JSON-validity retry. Uploads are
+  resumable, retry 5xx and network errors with exponential backoff, and a video is marked `failed`
+  after 3 attempts. Every failure is stored in `last_error` and the `events` table.
+- **Auditability.** Every AI prompt and raw response is stored in `ai_decisions`, so you can show
+  why each video was selected or rejected and what metadata the model proposed.
+- **AI disclosure.** Generated descriptions end with a note that the metadata was AI-assisted, and
+  CC-BY content gets a credit line.
+
+## Tests
+
+```bash
+pytest -q
+```
+
+The tests use the offline AI provider and a fake uploader. The end-to-end test generates real
+clips with ffmpeg and runs every stage.
