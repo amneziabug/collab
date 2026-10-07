@@ -70,6 +70,6 @@ days_ahead = 3
 [youtube]
 title = ""                 # fixed title for every upload, e.g. "#fyp #viral"; "" = AI-written title
 description = "ai"         # "ai" = AI-written description, "none" = no description
+privacy = "private"        # "private" | "unlisted" | "public" (unaudited API projects are forced to private)
 category_id = "27"         # 27 = Education
 default_language = "en"
-# Uploads are ALWAYS private; this is enforced in code and not configurable.

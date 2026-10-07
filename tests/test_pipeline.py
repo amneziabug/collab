@@ -263,3 +263,25 @@ def test_own_folder_ignores_minor_flags_but_not_serious_ones(cfg, db, uploader):
     Pipeline(cfg, db, Flagging, lambda: uploader).analyze_and_rank()
     st = _statuses(db)
     assert st["minor"] == "selected" and st["bad"] == "rejected"
+
+
+def test_privacy_setting_is_passed_and_actual_privacy_recorded(cfg, db):
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    class LockedToPrivate:
+        last_privacy = None
+
+        def upload(self, *a, privacy, **k):
+            self.requested = privacy
+            self.last_privacy = "private"     # what YouTube does for unaudited projects
+            return "vid1"
+
+    cfg.youtube.privacy = "public"
+    up = LockedToPrivate()
+    vid, _ = db.upsert_discovered({"source": "t", "source_id": "a", "title": "x"})
+    db.update(vid, status="scheduled", scheduled_at="2020-01-01T00:00:00+00:00", processed_path="/x.mp4",
+              yt_title="T", yt_description="D", yt_tags=[])
+    Pipeline(cfg, db, OfflineClient, lambda: up).upload_due()
+    assert up.requested == "public"
+    assert db.get(vid)["status_reason"] == "private"

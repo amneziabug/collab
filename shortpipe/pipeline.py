@@ -266,8 +266,8 @@ class Pipeline:
         for video in due:
             if dry_run:
                 title, description, _ = self.final_metadata(video)
-                log.info("[dry-run] would upload #%d %r (private), description: %r",
-                         video["id"], title, description[:60])
+                log.info("[dry-run] would upload #%d %r (%s), description: %r",
+                         video["id"], title, self.cfg.youtube.privacy, description[:60])
                 continue
             self.db.set_status(video["id"], "uploading", None, attempts=video["attempts"] + 1)
             try:
@@ -279,6 +279,7 @@ class Pipeline:
                 yt_id = self._uploader.upload(
                     Path(video["processed_path"]), title=title, description=description, tags=tags,
                     category_id=self.cfg.youtube.category_id, language=self.cfg.youtube.default_language,
+                    privacy=self.cfg.youtube.privacy,
                 )
             except YouTubeAuthError as exc:
                 # Not the video's fault: undo the attempt and stop until the user logs in again.
@@ -302,9 +303,10 @@ class Pipeline:
                 log.exception("Upload of #%d failed", video["id"])
                 continue
             # Record what was actually sent (the overrides may differ from the AI's version).
-            self.db.set_status(video["id"], "uploaded", "private", youtube_video_id=yt_id,
+            privacy = getattr(self._uploader, "last_privacy", None) or self.cfg.youtube.privacy
+            self.db.set_status(video["id"], "uploaded", privacy, youtube_video_id=yt_id,
                                yt_title=title, yt_description=description)
-            log.info("Uploaded #%d as https://youtu.be/%s (private)", video["id"], yt_id)
+            log.info("Uploaded #%d as https://youtu.be/%s (%s)", video["id"], yt_id, privacy)
             uploaded += 1
         return uploaded
 
@@ -346,7 +348,7 @@ class Pipeline:
     def upload_now(self, sources: VideoSource | list[VideoSource],
                    dry_run: bool = False) -> dict[str, int]:
         """Prepare everything, then upload every ready or scheduled video immediately
-        instead of waiting for its slot. Uploads stay private. Whatever the daily quota
+        instead of waiting for its slot, with the configured privacy. Whatever the daily quota
         doesn't allow stays queued for the next run."""
         stats = self.prepare(sources)
         queue = self.db.by_status("metadata_ready") + list(self.db.conn.execute(
@@ -354,8 +356,8 @@ class Pipeline:
         if dry_run:
             for video in queue:
                 title, description, _ = self.final_metadata(video)
-                log.info("[dry-run] would upload #%d %r now (private), description: %r",
-                         video["id"], title, description[:60])
+                log.info("[dry-run] would upload #%d %r now (%s), description: %r",
+                         video["id"], title, self.cfg.youtube.privacy, description[:60])
             return {**stats, "queued": len(queue), "uploaded": 0}
         now = datetime.now(timezone.utc)
         stamp = scheduler.to_iso(now)

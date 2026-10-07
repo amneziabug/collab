@@ -67,6 +67,7 @@ class YouTubeConfig:
     default_language: str = "en"
     title: str = ""             # fixed title for every upload (e.g. "#fyp #viral"); "" = AI-written
     description: str = "ai"     # "ai" = AI-written description, "none" = leave it empty
+    privacy: str = "private"    # "private" | "unlisted" | "public"
 
 
 @dataclass
@@ -148,6 +149,8 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ValueError('ai.provider "openai" is no longer supported; use "ollama", "claude" or "offline"')
     if cfg.ai.effort not in {"low", "medium", "high", "xhigh", "max"}:
         raise ValueError("ai.effort must be one of low, medium, high, xhigh, max")
+    if cfg.youtube.privacy not in {"private", "unlisted", "public"}:
+        raise ValueError('youtube.privacy must be "private", "unlisted" or "public"')
     if cfg.youtube.description not in {"ai", "none"}:
         raise ValueError('youtube.description must be "ai" or "none"')
     if len(cfg.youtube.title) > 100 or any(c in cfg.youtube.title for c in "<>"):

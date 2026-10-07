@@ -109,7 +109,7 @@ python -m shortpipe upload-now              # prepare all videos and upload them
 ```
 
 `upload-now` doesn't need a running daemon or an open laptop. It runs discover → analyze →
-process → metadata, then uploads every ready or scheduled video at once (always private), and
+process → metadata, then uploads every ready or scheduled video at once (with `[youtube] privacy`), and
 exits. YouTube's free quota allows about 6 uploads a day, so anything beyond that stays queued, and
 the next `upload-now` uploads it.
 
@@ -210,9 +210,13 @@ re-uploading other creators' content isn't permitted, so this project doesn't us
 
 ## Design notes
 
-- **Uploads are always private.** `privacyStatus` is fixed to `"private"` in `youtube/uploader.py`
-  and can't be configured. `status.publishAt` is never set, because YouTube would make the
-  video public at that time. The "scheduled publication time" is when *our* scheduler uploads it.
+- **Privacy.** Uploads are private by default. `[youtube] privacy` can be set to `"unlisted"` or
+  `"public"`. Google locks videos uploaded through the API by **unaudited** Cloud projects to
+  private, whatever is requested. The uploader compares what YouTube actually applied, logs a
+  warning if the video was forced to private, and records the real privacy. Publishing through the
+  API needs the [YouTube API compliance audit](https://support.google.com/youtube/contact/yt_api_form).
+  `status.publishAt` is never set. The "scheduled publication time" is when *our* scheduler
+  uploads it.
 - **Quota.** The default YouTube Data API quota is 10,000 units/day and `videos.insert` costs about
   1,600, so `uploads_per_day` is limited to 1–6. On `quotaExceeded`, the video goes back to
   `scheduled` and uploading stops until the next run.
