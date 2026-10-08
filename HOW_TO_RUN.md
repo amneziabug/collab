@@ -51,7 +51,8 @@ owner = "Tamako"
 [youtube]
 title = "#fyp #viral"     # "" = let the AI write titles
 description = "none"      # "ai" = let the AI write descriptions
-privacy = "private"       # unaudited Google projects are forced to private anyway
+privacy = "private"       # "public" to publish (unaudited Google projects may be forced to private)
+publish_interval_minutes = 0   # 60 = 1st video public now, the rest 1 hour apart (needs privacy = "public")
 
 [processing]
 max_duration_seconds = 180

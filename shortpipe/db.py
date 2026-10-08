@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS videos (
     content_hash     TEXT,              -- sha256 of the source file, for duplicate detection
     has_stats        INTEGER NOT NULL DEFAULT 1,
     visual_summary   TEXT,              -- what a vision model saw in the frames
+    publish_at       TEXT,              -- when the video goes/went public (UTC ISO)
     yt_title         TEXT,
     yt_description   TEXT,
     yt_tags          TEXT,              -- JSON list
@@ -104,7 +105,7 @@ class Database:
         """Add columns introduced after a database was first created."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(videos)")}
         for name, ddl in (("content_hash", "TEXT"), ("has_stats", "INTEGER NOT NULL DEFAULT 1"),
-                          ("visual_summary", "TEXT")):
+                          ("visual_summary", "TEXT"), ("publish_at", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {ddl}")
         self.conn.commit()
@@ -188,7 +189,8 @@ class Database:
 
     def due_uploads(self, now_iso: str) -> list[sqlite3.Row]:
         return list(self.conn.execute(
-            "SELECT * FROM videos WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at",
+            "SELECT * FROM videos WHERE status = 'scheduled' AND scheduled_at <= ? "
+            "ORDER BY scheduled_at, id",
             (now_iso,),
         ))
 
@@ -199,6 +201,12 @@ class Database:
             "ORDER BY id LIMIT 1",
             (content_hash, exclude_id),
         ).fetchone()
+
+    def latest_publish_at(self) -> str | None:
+        row = self.conn.execute(
+            "SELECT MAX(publish_at) AS t FROM videos WHERE status IN ('scheduled', 'uploading', 'uploaded')"
+        ).fetchone()
+        return row["t"]
 
     def scheduled_times(self) -> set[str]:
         rows = self.conn.execute(

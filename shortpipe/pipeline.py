@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -276,10 +276,11 @@ class Pipeline:
                         raise UploadError("no uploader configured")
                     self._uploader = self._uploader_factory()
                 title, description, tags = self.final_metadata(video)
+                publish_at = self._publish_at_for_upload(video)
                 yt_id = self._uploader.upload(
                     Path(video["processed_path"]), title=title, description=description, tags=tags,
                     category_id=self.cfg.youtube.category_id, language=self.cfg.youtube.default_language,
-                    privacy=self.cfg.youtube.privacy,
+                    privacy=self.cfg.youtube.privacy, publish_at=publish_at,
                 )
             except YouTubeAuthError as exc:
                 # Not the video's fault: undo the attempt and stop until the user logs in again.
@@ -303,7 +304,8 @@ class Pipeline:
                 log.exception("Upload of #%d failed", video["id"])
                 continue
             # Record what was actually sent (the overrides may differ from the AI's version).
-            privacy = getattr(self._uploader, "last_privacy", None) or self.cfg.youtube.privacy
+            privacy = getattr(self._uploader, "last_privacy", None) or (
+                f"scheduled public at {publish_at}" if publish_at else self.cfg.youtube.privacy)
             self.db.set_status(video["id"], "uploaded", privacy, youtube_video_id=yt_id,
                                yt_title=title, yt_description=description)
             log.info("Uploaded #%d as https://youtu.be/%s (%s)", video["id"], yt_id, privacy)
@@ -345,24 +347,56 @@ class Pipeline:
     def run_all(self, sources: VideoSource | list[VideoSource]) -> dict[str, int]:
         return {**self.prepare(sources), "scheduled": self.schedule()}
 
+    def _publish_at_for_upload(self, video) -> str | None:
+        """The planned publish time, or None to publish immediately (also when the planned
+        time has already passed, e.g. on a retry, since YouTube rejects past times)."""
+        planned = video["publish_at"]
+        if not planned:
+            return None
+        when = datetime.fromisoformat(planned)
+        if when <= datetime.now(timezone.utc) + timedelta(minutes=2):
+            return None
+        return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def plan_publish_times(self, queue, now: datetime) -> list[datetime]:
+        """1st video now, each next one `publish_interval_minutes` later. Continues after
+        videos still waiting from an earlier run, so the gap holds across runs too."""
+        gap = timedelta(minutes=self.cfg.youtube.publish_interval_minutes)
+        start = now
+        latest = self.db.latest_publish_at()
+        if latest:
+            start = max(now, datetime.fromisoformat(latest) + gap)
+        return [start + gap * i for i in range(len(queue))]
+
     def upload_now(self, sources: VideoSource | list[VideoSource],
                    dry_run: bool = False) -> dict[str, int]:
         """Prepare everything, then upload every ready or scheduled video immediately
         instead of waiting for its slot, with the configured privacy. Whatever the daily quota
         doesn't allow stays queued for the next run."""
         stats = self.prepare(sources)
-        queue = self.db.by_status("metadata_ready") + list(self.db.conn.execute(
-            "SELECT * FROM videos WHERE status = 'scheduled' ORDER BY scheduled_at"))
-        if dry_run:
-            for video in queue:
-                title, description, _ = self.final_metadata(video)
-                log.info("[dry-run] would upload #%d %r now (%s), description: %r",
-                         video["id"], title, self.cfg.youtube.privacy, description[:60])
-            return {**stats, "queued": len(queue), "uploaded": 0}
+        # Folder order (oldest id first) = publishing order. Videos already given a publish
+        # time by an earlier run keep it; new ones are planned after them.
+        queue = sorted(self.db.by_status("metadata_ready") + [
+            v for v in self.db.by_status("scheduled") if not v["publish_at"]], key=lambda v: v["id"])
         now = datetime.now(timezone.utc)
+        interval = self.cfg.youtube.publish_interval_minutes
+        times = self.plan_publish_times(queue, now) if interval else [None] * len(queue)
+        if dry_run:
+            for video, when in zip(queue, times):
+                title, description, _ = self.final_metadata(video)
+                goes = ("now" if when is None or when <= now + timedelta(minutes=2)
+                        else f"public at {scheduler.to_iso(when)} UTC")
+                log.info("[dry-run] would upload #%d %r (%s, %s), description: %r", video["id"],
+                         title, self.cfg.youtube.privacy, goes, description[:60])
+            return {**stats, "queued": len(queue), "uploaded": 0}
         stamp = scheduler.to_iso(now)
-        for video in queue:
-            self.db.set_status(video["id"], "scheduled", "upload now", scheduled_at=stamp)
+        for video, when in zip(queue, times):
+            self.db.set_status(video["id"], "scheduled", "upload now", scheduled_at=stamp,
+                               publish_at=scheduler.to_iso(when) if when else None)
+        # Videos left over from an earlier run (e.g. quota) with a publish time: upload them too.
+        for video in self.db.by_status("scheduled"):
+            if video["publish_at"] and video["scheduled_at"] > stamp:
+                self.db.update(video["id"], scheduled_at=stamp)
         if len(queue) > 6:
             log.warning("%d videos queued; YouTube's free daily quota allows about 6 uploads, "
                         "the rest will stay queued for the next run", len(queue))

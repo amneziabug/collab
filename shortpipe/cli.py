@@ -179,13 +179,15 @@ def _status(db: Database, n_events: int) -> None:
     for status, n in sorted(db.counts().items()):
         print(f"  {status:<15} {n}")
     upcoming = db.conn.execute(
-        "SELECT id, yt_title, scheduled_at, status, youtube_video_id FROM videos "
+        "SELECT id, yt_title, scheduled_at, status, youtube_video_id, publish_at FROM videos "
         "WHERE scheduled_at IS NOT NULL ORDER BY scheduled_at"
     ).fetchall()
     if upcoming:
         print("\nSchedule (UTC):")
         for r in upcoming:
             extra = f" -> youtu.be/{r['youtube_video_id']}" if r["youtube_video_id"] else ""
+            if r["publish_at"]:
+                extra += f"  (public at {r['publish_at']})"
             print(f"  {r['scheduled_at']}  #{r['id']:<4} {r['status']:<10} {r['yt_title']}{extra}")
     waiting = db.conn.execute(
         "SELECT id, source, source_id, title FROM videos "

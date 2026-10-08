@@ -71,5 +71,6 @@ days_ahead = 3
 title = ""                 # fixed title for every upload, e.g. "#fyp #viral"; "" = AI-written title
 description = "ai"         # "ai" = AI-written description, "none" = no description
 privacy = "private"        # "private" | "unlisted" | "public" (unaudited API projects are forced to private)
+publish_interval_minutes = 0   # upload-now: 60 = 1st video public now, next ones 1 h apart (needs privacy = "public")
 category_id = "27"         # 27 = Education
 default_language = "en"

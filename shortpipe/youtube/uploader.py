@@ -38,9 +38,13 @@ class QuotaExceededError(UploadError):
 
 
 def build_body(title: str, description: str, tags: list[str], category_id: str,
-               language: str, privacy: str = "private") -> dict:
+               language: str, privacy: str = "private", publish_at: str | None = None) -> dict:
+    """With `publish_at` (UTC ISO time), YouTube keeps the video private and makes it
+    public at that time by itself; YouTube requires privacyStatus "private" for that."""
     if privacy not in PRIVACY_OPTIONS:
         raise ValueError(f"privacy must be one of {PRIVACY_OPTIONS}")
+    if publish_at:
+        privacy = "private"
     body = {
         "snippet": {
             "title": title,
@@ -52,9 +56,11 @@ def build_body(title: str, description: str, tags: list[str], category_id: str,
         "status": {
             "privacyStatus": privacy,
             "selfDeclaredMadeForKids": False,
-            "embeddable": privacy == "public",
+            "embeddable": privacy == "public" or bool(publish_at),
         },
     }
+    if publish_at:
+        body["status"]["publishAt"] = publish_at
     return body
 
 
@@ -67,7 +73,8 @@ class YouTubeUploader:
         self.last_privacy: str | None = None  # privacy YouTube actually applied to the last upload
 
     def upload(self, file_path: Path, *, title: str, description: str, tags: list[str],
-               category_id: str, language: str, privacy: str = "private") -> str:
+               category_id: str, language: str, privacy: str = "private",
+               publish_at: str | None = None) -> str:
         from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaFileUpload
 
@@ -75,7 +82,7 @@ class YouTubeUploader:
         if not file_path.is_file():
             raise UploadError(f"file not found: {file_path}")
 
-        body = build_body(title, description, tags, category_id, language, privacy)
+        body = build_body(title, description, tags, category_id, language, privacy, publish_at)
         media = MediaFileUpload(str(file_path), mimetype="video/mp4", chunksize=CHUNK_SIZE, resumable=True)
         request = self.service.videos().insert(part="snippet,status", body=body,
                                                media_body=media, notifySubscribers=False)
@@ -102,7 +109,16 @@ class YouTubeUploader:
         video_id = response.get("id")
         if not video_id:
             raise UploadError(f"unexpected response: {response}")
-        applied = response.get("status", {}).get("privacyStatus") or privacy
+        status = response.get("status", {})
+        applied = status.get("privacyStatus") or privacy
+        if publish_at:
+            if status.get("publishAt"):
+                self.last_privacy = f"scheduled public at {status['publishAt']}"
+            else:
+                self.last_privacy = applied
+                log.warning("Video %s: YouTube ignored the scheduled publish time. %s",
+                            video_id, LOCKED_PRIVATE_HINT)
+            return video_id
         self.last_privacy = applied
         if applied != privacy:
             log.warning("Video %s: asked for %r but it is %r. %s", video_id, privacy, applied,

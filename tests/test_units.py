@@ -59,3 +59,9 @@ def test_upload_body_privacy():
     import pytest
     with pytest.raises(ValueError):
         build_body("t", "d", [], "27", "en", "everyone")
+
+
+def test_upload_body_with_publish_time():
+    body = build_body("t", "d", [], "27", "en", "public", publish_at="2026-10-08T18:00:00Z")
+    assert body["status"]["privacyStatus"] == "private"
+    assert body["status"]["publishAt"] == "2026-10-08T18:00:00Z"

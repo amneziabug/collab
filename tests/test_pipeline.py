@@ -1,3 +1,4 @@
+import pytest
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -285,3 +286,57 @@ def test_privacy_setting_is_passed_and_actual_privacy_recorded(cfg, db):
     Pipeline(cfg, db, OfflineClient, lambda: up).upload_due()
     assert up.requested == "public"
     assert db.get(vid)["status_reason"] == "private"
+
+
+def _ready(db, n, start=0):
+    ids = []
+    for i in range(start, start + n):
+        vid, _ = db.upsert_discovered({"source": "folder", "source_id": f"v{i}", "title": f"v{i}"})
+        db.update(vid, status="metadata_ready", processed_path="/x.mp4", yt_title=f"t{i}",
+                  yt_description="", yt_tags=[])
+        ids.append(vid)
+    return ids
+
+
+def test_publish_interval_spaces_videos_one_hour_apart(cfg, db, uploader):
+    from datetime import datetime, timedelta, timezone
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.privacy = "public"
+    cfg.youtube.publish_interval_minutes = 60
+    _ready(db, 3)
+    before = datetime.now(timezone.utc)
+    result = Pipeline(cfg, db, OfflineClient, lambda: uploader).upload_now([])
+    assert result["uploaded"] == 3
+    sent = [k["publish_at"] for _, k in uploader.calls]
+    assert sent[0] is None                                   # first one: public right away
+    times = [datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) for t in sent[1:]]
+    assert timedelta(minutes=59) < times[0] - before <= timedelta(minutes=61)
+    assert times[1] - times[0] == timedelta(hours=1)
+    assert all(k["privacy"] == "public" for _, k in uploader.calls)
+
+
+def test_next_run_continues_after_last_scheduled_video(cfg, db, uploader):
+    from datetime import datetime, timedelta, timezone
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.privacy = "public"
+    cfg.youtube.publish_interval_minutes = 60
+    pipe = Pipeline(cfg, db, OfflineClient, lambda: uploader)
+    _ready(db, 2)
+    pipe.upload_now([])
+    last = datetime.strptime(uploader.calls[1][1]["publish_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    _ready(db, 1, start=10)                                  # a new video added later
+    pipe.upload_now([])
+    new = datetime.strptime(uploader.calls[2][1]["publish_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert new - last == timedelta(hours=1)
+
+
+def test_interval_requires_public(tmp_path):
+    from shortpipe.config import load_config
+    p = tmp_path / "c.toml"
+    p.write_text('[youtube]\npublish_interval_minutes = 60\nprivacy = "private"\n')
+    with pytest.raises(ValueError, match="public"):
+        load_config(p)

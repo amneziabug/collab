@@ -110,6 +110,13 @@ python -m shortpipe upload-now --dry-run    # preview: everything ready, uploade
 python -m shortpipe upload-now              # prepare all videos and upload them right away
 ```
 
+With `[youtube] privacy = "public"` and `publish_interval_minutes = 60`, `upload-now` still uploads
+everything at once. The first video goes public immediately, and each next one gets a YouTube
+`publishAt` time 60 minutes after the previous. YouTube then publishes them by itself, so the
+laptop can be off. A later run continues 60 minutes after the last planned one.
+`status` shows each video's `public at` time. If YouTube ignores the publish time (unaudited
+projects are locked to private), the run logs a warning.
+
 `upload-now` doesn't need a running daemon or an open laptop. It runs discover → analyze →
 process → metadata, then uploads every ready or scheduled video at once (with `[youtube] privacy`), and
 exits. YouTube's free quota allows about 6 uploads a day, so anything beyond that stays queued, and
