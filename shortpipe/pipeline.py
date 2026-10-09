@@ -104,6 +104,14 @@ class Pipeline:
                 log.info("[%d/%d] #%d %r rejected: only %d views", n, len(candidates),
                          video["id"], video["title"], video["views"])
                 continue
+            own_folder = video["source"] == "folder" and self.cfg.folder.auto_approve
+            if own_folder and self.cfg.folder.skip_analysis:
+                # Your own videos are all approved, so the ranking call would only cost time.
+                log.info("[%d/%d] #%d %r: own folder, auto-approved", n, len(candidates),
+                         video["id"], video["title"])
+                self._ensure_visual_summary(video)
+                scored.append((0.0, video["id"], "auto-approved (folder)"))
+                continue
             log.info("[%d/%d] Analysing #%d %r with %s ...", n, len(candidates),
                      video["id"], video["title"], self.ai.model)
             started = time.monotonic()
@@ -121,7 +129,6 @@ class Pipeline:
             engagement, score = final_score(dict(video), result["relevance"], result["educational_value"])
             self.db.update(video["id"], topic=result["topic"], relevance_score=result["relevance"],
                            engagement_score=engagement, final_score=score)
-            own_folder = video["source"] == "folder" and self.cfg.folder.auto_approve
             serious = [f for f in result["content_flags"] if is_serious_flag(f)]
             if serious or (result["content_flags"] and not own_folder):
                 self.db.set_status(video["id"], "rejected", f"AI flags: {result['content_flags']}")
@@ -219,7 +226,8 @@ class Pipeline:
             log.info("[%d/%d] Writing metadata for #%d %r ...", n, len(pending), video["id"], video["title"])
             started = time.monotonic()
             try:
-                prompt, meta = generate_metadata(self.ai, video)
+                prompt, meta = generate_metadata(self.ai, video, self.cfg.youtube.style,
+                                                 self.cfg.youtube.ai_note)
             except AIConfigError:
                 raise
             except AIError as exc:
@@ -250,7 +258,13 @@ class Pipeline:
     def final_metadata(self, video) -> tuple[str, str, list[str]]:
         """Title/description actually sent to YouTube, after the [youtube] overrides."""
         yt = self.cfg.youtube
-        title = yt.title.strip() or video["yt_title"]
+        title = yt.title.strip()
+        if not title:
+            title = video["yt_title"] or ""
+            tags_text = yt.title_hashtags.strip()
+            if tags_text and tags_text not in title:
+                room = 100 - len(tags_text) - 1
+                title = f"{title[:room].rstrip()} {tags_text}"
         if yt.description == "none":
             # Keep a required licence credit (CC BY); otherwise send no description at all.
             description = f"Credit: {video['attribution']}" if video["attribution"] else ""
@@ -361,12 +375,19 @@ class Pipeline:
     def plan_publish_times(self, queue, now: datetime) -> list[datetime]:
         """1st video now, each next one `publish_interval_minutes` later. Continues after
         videos still waiting from an earlier run, so the gap holds across runs too."""
-        gap = timedelta(minutes=self.cfg.youtube.publish_interval_minutes)
+        yt = self.cfg.youtube
+        gap = timedelta(minutes=yt.publish_interval_minutes)
         start = now
         latest = self.db.latest_publish_at()
         if latest:
             start = max(now, datetime.fromisoformat(latest) + gap)
-        return [start + gap * i for i in range(len(queue))]
+        times = []
+        for _ in queue:
+            if yt.publish_window:
+                start = scheduler.next_in_window(start, yt.publish_window, yt.publish_timezone)
+            times.append(start)
+            start = start + gap
+        return times
 
     def upload_now(self, sources: VideoSource | list[VideoSource],
                    dry_run: bool = False) -> dict[str, int]:

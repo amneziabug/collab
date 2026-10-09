@@ -81,6 +81,7 @@ def test_vision_summary_feeds_metadata(cfg, db, uploader, tmp_path):
         folder.mkdir()
         make_clip(folder / "IMG_0001.mp4")
         cfg.ai.vision_frames = 2
+        cfg.folder.skip_analysis = False
         pipe = Pipeline(cfg, db, OfflineClient, lambda: uploader,
                         vision_factory=lambda: OllamaClient("gemma3:4b", fake.url))
         pipe.discover(FolderSource(folder, "Tamako"))
@@ -112,5 +113,27 @@ def test_vision_failure_is_not_fatal(cfg, db, uploader, tmp_path):
         pipe.discover(FolderSource(folder, "Tamako"))
         assert pipe.analyze_and_rank() == 1
         assert db.conn.execute("SELECT visual_summary FROM videos").fetchone()[0] is None
+    finally:
+        fake.server.shutdown()
+
+
+@needs_ffmpeg
+def test_own_folder_skips_ranking_but_still_looks_at_video(cfg, db, uploader, tmp_path):
+    from shortpipe.ai.client import OllamaClient
+
+    fake = FakeOllama()
+    try:
+        fake.replies.append((200, {"message": {"role": "assistant", "content": "A cat jumps on a desk."}}))
+        folder = tmp_path / "vids"
+        folder.mkdir()
+        make_clip(folder / "Snaptik_123_v3.mp4")
+        pipe = Pipeline(cfg, db, OfflineClient, lambda: uploader,
+                        vision_factory=lambda: OllamaClient("gemma3:4b", fake.url))
+        pipe.discover(FolderSource(folder, "Tamako"))
+        assert pipe.analyze_and_rank() == 1
+        stages = [r[0] for r in db.conn.execute("SELECT stage FROM ai_decisions")]
+        assert stages == ["vision"]                     # no ranking call
+        row = db.conn.execute("SELECT * FROM videos").fetchone()
+        assert row["status"] == "selected" and row["visual_summary"].startswith("A cat")
     finally:
         fake.server.shutdown()

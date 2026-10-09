@@ -39,6 +39,35 @@ From then on, double-click **Upload to YouTube** on your Desktop.
 
 ---
 
+## Recommended setup for views
+
+What these settings do:
+- **Titles:** the AI watches a few frames of each video, then writes a short, specific title. `#shorts` is added at the end.
+- **Description:** a short line with 2–3 relevant hashtags.
+- **Publishing:** videos go public one hour apart between 6 and 10 PM US Eastern time. Extras roll over to the next evening.
+
+```toml
+[ai]
+provider = "ollama"
+ollama_model = "gemma3:4b"          # one small model for both looking and writing (fast on a laptop)
+ollama_vision_model = "gemma3:4b"
+
+[youtube]
+title = ""                          # empty = AI writes the title
+title_hashtags = "#shorts"
+style = "creator"
+description = "ai"
+ai_note = false                     # true adds "written with AI assistance" under the description
+privacy = "public"
+publish_interval_minutes = 60
+publish_window = "18:00-22:00"
+publish_timezone = "America/New_York"
+
+[folder]
+skip_analysis = true                # skip the slow ranking step; your folder videos are all approved
+```
+The model only needs downloading once: `ollama pull gemma3:4b`.
+
 ## Settings you might change
 
 Edit with `nano ~/github/collab/config.toml` (save: **Ctrl+O**, **Enter**, exit: **Ctrl+X**).

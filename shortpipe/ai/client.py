@@ -223,10 +223,12 @@ class OfflineClient(AIClient):
     def _metadata(p: dict) -> dict:
         v = p["video"]
         title = v["title"][:90].strip() or "Educational short"
-        tags = list(dict.fromkeys([v.get("topic", ""), *v["hashtags"], "education", "shorts"]))
+        topic = (v.get("topic") or "").replace(" ", "")
+        tags = list(dict.fromkeys([topic, *v["hashtags"], "shorts"]))
+        hashtags = " ".join(f"#{t}" for t in ["shorts", topic] if t)
         return {
             "title": f"{title} #shorts"[:100],
-            "description": f"{v['description']}\n\n#shorts #{v.get('topic', 'learning').replace(' ', '')}",
+            "description": f"{v['description']}\n\n{hashtags}".strip(),
             "tags": [t for t in tags if t][:15],
         }
 

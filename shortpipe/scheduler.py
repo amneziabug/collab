@@ -37,3 +37,33 @@ def free_slots(now: datetime, taken: set[str], per_day: int, start: str, end: st
             if slot > now and iso not in taken:
                 slots.append(iso)
     return slots
+
+
+def parse_window(window: str, tz: str) -> tuple[time, time, ZoneInfo]:
+    """"18:00-22:00" -> (18:00, 22:00, zone). Raises ValueError when malformed."""
+    try:
+        start_s, end_s = window.split("-")
+        start, end = _parse_hhmm(start_s.strip()), _parse_hhmm(end_s.strip())
+        zone = ZoneInfo(tz)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"bad publish window {window!r} / time zone {tz!r}: {exc}") from exc
+    if end <= start:
+        raise ValueError("publish window end must be after its start (same day)")
+    return start, end, zone
+
+
+def next_in_window(t: datetime, window: str, tz: str) -> datetime:
+    """The earliest moment >= t that falls inside the daily local window."""
+    start, end, zone = parse_window(window, tz)
+    local = t.astimezone(zone)
+    day = local.date()
+    for _ in range(3):
+        begin = datetime.combine(day, start, zone)
+        finish = datetime.combine(day, end, zone)
+        if local < begin:
+            return begin.astimezone(timezone.utc)
+        if local <= finish:
+            return local.astimezone(timezone.utc)
+        day += timedelta(days=1)
+        local = datetime.combine(day, time(0, 0), zone)
+    raise ValueError("could not find a publish slot")

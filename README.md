@@ -117,6 +117,15 @@ laptop can be off. A later run continues 60 minutes after the last planned one.
 `status` shows each video's `public at` time. If YouTube ignores the publish time (unaudited
 projects are locked to private), the run logs a warning.
 
+With `publish_window = "18:00-22:00"` and `publish_timezone = "America/New_York"`, publish times
+are kept inside that daily window. Videos that don't fit move to the next day's window. A run
+inside the window publishes the first video immediately.
+
+`style = "creator"` asks the AI for short, specific titles, and for descriptions that end with 2–3
+hashtags. It's meant for your own non-educational videos, and ignores meaningless filenames.
+`title_hashtags` is added after each AI title. For your own folder, `skip_analysis = true` skips
+the ranking call, but the optional vision step still runs, so titles still match the video.
+
 `upload-now` doesn't need a running daemon or an open laptop. It runs discover → analyze →
 process → metadata, then uploads every ready or scheduled video at once (with `[youtube] privacy`), and
 exits. YouTube's free quota allows about 6 uploads a day, so anything beyond that stays queued, and

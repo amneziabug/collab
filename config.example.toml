@@ -19,6 +19,7 @@ path = "/mnt/c/Users/YOURNAME/Videos/shortpipe"   # Windows folder C:\Users\YOUR
 owner = ""                # your name: confirms you made/own every video in this folder (required)
 recursive = false         # also scan sub-folders
 auto_approve = true       # schedule every video here unless the AI flags a problem
+skip_analysis = true      # don't run the slow ranking step for these (titles still use AI)
 
 [tiktok]
 # From your app on developers.tiktok.com. Prefer env vars TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET.
@@ -69,8 +70,13 @@ days_ahead = 3
 
 [youtube]
 title = ""                 # fixed title for every upload, e.g. "#fyp #viral"; "" = AI-written title
+title_hashtags = ""        # added after AI titles, e.g. "#shorts"
+style = "educational"      # AI writing style: "educational" or "creator" (short, specific, curious)
+ai_note = true             # "written with AI assistance" line under AI descriptions
 description = "ai"         # "ai" = AI-written description, "none" = no description
 privacy = "private"        # "private" | "unlisted" | "public" (unaudited API projects are forced to private)
 publish_interval_minutes = 0   # upload-now: 60 = 1st video public now, next ones 1 h apart (needs privacy = "public")
+publish_window = ""            # e.g. "18:00-22:00": only publish in these hours (rest moves to next day)
+publish_timezone = "America/New_York"   # time zone of the window (US Eastern)
 category_id = "27"         # 27 = Education
 default_language = "en"

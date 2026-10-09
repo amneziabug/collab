@@ -66,11 +66,16 @@ class YouTubeConfig:
     category_id: str = "27"
     default_language: str = "en"
     title: str = ""             # fixed title for every upload (e.g. "#fyp #viral"); "" = AI-written
+    title_hashtags: str = ""    # added after the AI title, e.g. "#shorts #editing"
+    style: str = "educational"  # AI writing style: "educational" | "creator"
+    ai_note: bool = True        # add "written with AI assistance" under AI descriptions
     description: str = "ai"     # "ai" = AI-written description, "none" = leave it empty
     privacy: str = "private"    # "private" | "unlisted" | "public"
     # upload-now: 0 = publish everything at once; N = 1st video public now, each next one
     # scheduled N minutes after the previous (YouTube publishes them; laptop can be off)
     publish_interval_minutes: int = 0
+    publish_window: str = ""    # e.g. "18:00-22:00": only publish inside these local hours...
+    publish_timezone: str = "America/New_York"  # ...in this time zone (US Eastern by default)
 
 
 @dataclass
@@ -94,6 +99,7 @@ class FolderConfig:
     owner: str = ""             # your name: declares you made/own every video in this folder
     recursive: bool = False     # also look in sub-folders
     auto_approve: bool = True   # schedule every video here (unless the AI flags a problem)
+    skip_analysis: bool = True  # with auto_approve: skip the (slow) ranking call; titles still use AI
 
 
 @dataclass
@@ -159,6 +165,11 @@ def load_config(path: str | Path | None = None) -> Config:
     if cfg.youtube.publish_interval_minutes and cfg.youtube.privacy != "public":
         raise ValueError('youtube.publish_interval_minutes schedules videos to go public; '
                          'set youtube.privacy = "public" too (or set the interval to 0)')
+    if cfg.youtube.style not in {"educational", "creator"}:
+        raise ValueError('youtube.style must be "educational" or "creator"')
+    if cfg.youtube.publish_window:
+        from .scheduler import parse_window
+        parse_window(cfg.youtube.publish_window, cfg.youtube.publish_timezone)
     if cfg.youtube.description not in {"ai", "none"}:
         raise ValueError('youtube.description must be "ai" or "none"')
     if len(cfg.youtube.title) > 100 or any(c in cfg.youtube.title for c in "<>"):

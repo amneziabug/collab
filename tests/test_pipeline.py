@@ -257,6 +257,7 @@ def test_own_folder_ignores_minor_flags_but_not_serious_ones(cfg, db, uploader):
             return {"topic": "other", "relevance": 0.0, "educational_value": 0.0,
                     "content_flags": self.flags[title], "recommend": False, "reasoning": "-"}
 
+    cfg.folder.skip_analysis = False
     Flagging.flags = {"minor": ["not_educational", "low_quality"], "bad": ["unsafe"]}
     for t in Flagging.flags:
         db.upsert_discovered({"source": "folder", "source_id": t, "title": t, "has_stats": False,
@@ -340,3 +341,58 @@ def test_interval_requires_public(tmp_path):
     p.write_text('[youtube]\npublish_interval_minutes = 60\nprivacy = "private"\n')
     with pytest.raises(ValueError, match="public"):
         load_config(p)
+
+
+def test_ai_title_gets_hashtags_appended_within_limit(cfg, db, uploader):
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.title_hashtags = "#shorts #editing"
+    pipe = Pipeline(cfg, db, OfflineClient, lambda: uploader)
+    vid, _ = db.upsert_discovered({"source": "t", "source_id": "a", "title": "x"})
+    db.update(vid, yt_title="This transition took me 3 hours", yt_description="", yt_tags=[])
+    assert pipe.final_metadata(db.get(vid))[0] == "This transition took me 3 hours #shorts #editing"
+    db.update(vid, yt_title="x" * 100)
+    title = pipe.final_metadata(db.get(vid))[0]
+    assert len(title) <= 100 and title.endswith("#shorts #editing")
+    cfg.youtube.title = "#fyp #viral"                 # a fixed title still wins
+    assert pipe.final_metadata(db.get(vid))[0] == "#fyp #viral"
+
+
+def test_publish_window_keeps_videos_in_us_evening(cfg, db, uploader):
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from shortpipe.ai.client import OfflineClient
+    from shortpipe.pipeline import Pipeline
+
+    cfg.youtube.privacy = "public"
+    cfg.youtube.publish_interval_minutes = 60
+    cfg.youtube.publish_window = "18:00-22:00"
+    cfg.youtube.publish_timezone = "America/New_York"
+    pipe = Pipeline(cfg, db, OfflineClient, lambda: uploader)
+    ny = ZoneInfo("America/New_York")
+    morning = datetime(2026, 10, 9, 9, 0, tzinfo=ny).astimezone(timezone.utc)   # 9 AM in New York
+    times = [t.astimezone(ny) for t in pipe.plan_publish_times([1] * 7, morning)]
+    assert [(t.day, t.hour) for t in times] == [(9, 18), (9, 19), (9, 20), (9, 21), (9, 22),
+                                                (10, 18), (10, 19)]
+    evening = datetime(2026, 10, 9, 19, 30, tzinfo=ny).astimezone(timezone.utc)  # inside the window
+    assert pipe.plan_publish_times([1], evening)[0] == evening
+
+
+def test_creator_style_prompt_is_used(cfg, db, uploader):
+    from shortpipe.ai.client import AIClient
+    from shortpipe.ai.metadata import CREATOR_PROMPT, generate_metadata
+
+    class Capture(AIClient):
+        model = "c"
+
+        def complete_json(self, task, system, user, schema):
+            self.system = system
+            return {"title": "Cat lands the jump 😼", "description": "Watch till the end.\n#cats #funny",
+                    "tags": ["cats"]}
+
+    ai = Capture()
+    vid, _ = db.upsert_discovered({"source": "folder", "source_id": "a", "title": "Snaptik 1"})
+    _, meta = generate_metadata(ai, db.get(vid), style="creator", ai_note=False)
+    assert ai.system == CREATOR_PROMPT
+    assert meta["description"] == "Watch till the end.\n#cats #funny"
